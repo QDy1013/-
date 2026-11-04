@@ -162,11 +162,11 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             long last = EngineHolder.lastReceivedAt;
             String line;
             if (last == 0) {
-                line = "● 通知读取：已连接 · 自动读取已开启，等群里来新消息";
+                // 真机问题：原本文案太长会折成两行，这里压到一行放得下。
+                line = "通知读取：已连接 · 等群里来新消息";
             } else {
-                String group = EngineHolder.lastReceivedGroup;
-                line = "● 通知读取：已连接 · 自动读取中 · 最近一条 " + relativeTime(last)
-                        + (TextUtils.isEmpty(group) ? "" : "（" + group + "）");
+                // 只留相对时间，不再拼群名，保证一行显示完整；「已连接」保留作状态锚点。
+                line = "通知读取：已连接 · 最近一条 " + relativeTime(last);
             }
             notifStatus.setText(line);
             notifStatus.setTextColor(Ui.GREEN);
@@ -425,19 +425,45 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     }
 
     private LinearLayout buildFilters() {
+        // 外层容器：上面一行筛选，下面压一条 1px 细线；容器本身高度只多 1px，滚动区域位置不变。
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+
+        // 筛选行：固定 44dp 行高，下拉框和搜索框都按整行高对齐，视觉上才是同一行。
         LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+
         Spinner state = new Spinner(this);
         state.setContentDescription("待办状态筛选");
         // 去掉系统默认的灰底下拉框，浅色界面里只留文字，避免多出一块色块。
         state.setBackgroundColor(Color.TRANSPARENT);
         Engine.CardScope[] scopes = {Engine.CardScope.ALL, Engine.CardScope.OPEN,
                 Engine.CardScope.OVERDUE, Engine.CardScope.COMPLETED};
-        ArrayAdapter<String> options = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
-                new String[]{"全部", "未完成", "已过期", "已完成"});
+        // 下拉框文字统一走主文字色，和右边的搜索文字同一层级。
+        ArrayAdapter<String> options = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item,
+                new String[]{"全部", "未完成", "已过期", "已完成"}) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                TextView v = (TextView) super.getView(position, convertView, parent);
+                v.setTextColor(Ui.TEXT);
+                v.setTextSize(14);
+                return v;
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                TextView v = (TextView) super.getDropDownView(position, convertView, parent);
+                v.setTextColor(Ui.TEXT);
+                return v;
+            }
+        };
         options.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         state.setAdapter(options);
-        row.addView(state);
+        // 高度撑满 44dp 行高，文字由 Spinner 自身垂直居中。
+        row.addView(state, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
         state.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 scope = scopes[position];
@@ -450,12 +476,14 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         search.setTextSize(14);
         search.setHint("搜索事项、群名、地点");
         search.setContentDescription("搜索待办卡片");
-        // 搜索框同样去底色：透明背景 + 灰字，和上面的说明文字同一个层次。
-        search.setTextColor(Ui.SUB);
+        // 搜索框去底色：背景置空（完全透明），主色文字 + 浅灰提示，左边距 8dp 和下拉开一点距离。
+        search.setBackground(null);
+        search.setTextColor(Ui.TEXT);
         search.setHintTextColor(Ui.MUTE);
-        search.setBackgroundColor(Color.TRANSPARENT);
-        search.setPadding(dp(this, 4), dp(this, 4), dp(this, 4), dp(this, 4));
-        row.addView(search, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        search.setPadding(dp(this, 8), 0, dp(this, 8), 0);
+        search.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(search, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
@@ -464,7 +492,13 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             }
             @Override public void afterTextChanged(Editable s) { }
         });
-        return row;
+
+        wrap.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(this, 44)));
+        // 行下细线：放在容器底部，和筛选行一起显示 / 隐藏，不影响下方滚动区域的位置。
+        wrap.addView(Ui.hairline(this), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 1));
+        return wrap;
     }
 
     private void resetCardPage() {
@@ -481,8 +515,15 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         btn.setAllCaps(false);
         btn.setTextColor(Ui.SUB);
         btn.setBackground(Ui.roundStroke(this, Color.TRANSPARENT, Ui.LINE, 16, 1));
-        // 不继承系统按钮的默认内边距，左右 12dp、上下 6dp 让胶囊看起来紧凑。
-        btn.setPadding(dp(this, 12), dp(this, 6), dp(this, 12), dp(this, 6));
+        // 真机问题：系统 Button 自带的最小高度 / 最小宽度会把胶囊撑成大灰框，全部清零。
+        btn.setMinHeight(0);
+        btn.setMinimumHeight(0);
+        btn.setMinWidth(0);
+        btn.setMinimumWidth(0);
+        // 去掉系统默认的按压阴影动画，浅色界面里只要一颗扁平小胶囊（API 21 起可用）。
+        btn.setStateListAnimator(null);
+        // 不继承系统按钮的默认内边距，左右 12dp、上下 7dp 让胶囊看起来紧凑。
+        btn.setPadding(dp(this, 12), dp(this, 7), dp(this, 12), dp(this, 7));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.rightMargin = dp(this, 8);
@@ -964,9 +1005,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
      * 行本身不带背景、描边和下边距，白卡和行间距都由外层 groupBox 统一处理。
      */
     View cardView(Engine.Card c) {
-        // 类型、标题和紧急度在一行里多处复用，先算好。
+        // 类型和标题在一行里多处复用，先算好。
         boolean isExam = "exam".equals(c.kind);
-        boolean isJielong = "jielong".equals(c.kind);
         String title = c.displayTitle() == null ? "" : c.displayTitle();
         long now = System.currentTimeMillis();
         int level = TodayView.urgency(c.deadline, c.needsConfirm, c.done, now);
@@ -1020,9 +1060,9 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         row.addView(content, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // 标题：不再用 emoji 前缀，考试 / 接龙改成行尾的小标签区分。
+        // 标题：不再用 emoji 前缀，只有考试类追加一个小标签；接龙卡标题本身已带「接龙：」，不再重复挂标签。
         TextView t = new TextView(this);
-        String tag = isExam ? "  考试" : (isJielong ? "  接龙" : "");
+        String tag = isExam ? "  考试" : "";
         SpannableString label = new SpannableString(title + tag);
         if (tag.length() > 0) {
             int start = title.length();
@@ -1032,7 +1072,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                     Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             label.setSpan(new StyleSpan(Typeface.BOLD), start, end,
                     Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-            label.setSpan(new ForegroundColorSpan(isExam ? Ui.BLUE : Ui.ORANGE), start, end,
+            label.setSpan(new ForegroundColorSpan(Ui.BLUE), start, end,
                     Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         t.setText(label);
@@ -1052,8 +1092,14 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 // 没读到时间时不假装有结论，直接引导用户点开补一下。
                 meta.append("没有读到明确时间，点开补一下");
             } else {
-                meta.append(Engine.humanDeadline(c.deadline)).append(" · ")
-                        .append(TodayView.countdown(c.deadline, now));
+                // 真机问题：倒计时本身已是「明天 09:00 / 后天 14:00」时，前面再拼具体时刻就重复了，
+                // 这时只显示倒计时；其余情况（还剩 N 分钟 / N 小时 / N 天后 / 已过期…）保留「具体时刻 · 倒计时」。
+                String cd = TodayView.countdown(c.deadline, now);
+                if (cd.startsWith("明天") || cd.startsWith("后天")) {
+                    meta.append(cd);
+                } else {
+                    meta.append(Engine.humanDeadline(c.deadline)).append(" · ").append(cd);
+                }
                 // 三小时内或已过期时整行提色加粗，扫一眼就能看出最紧的几件。
                 if (level == 2) {
                     metaColor = Ui.ORANGE;
