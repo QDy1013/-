@@ -38,7 +38,8 @@ public class ProfileActivity extends Activity {
 
     void buildUi(Engine.Profile p) {
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Color.parseColor("#0F1115"));
+        // 页面底色统一走规范里的极浅冷灰，替换原来的深色底。
+        sv.setBackgroundColor(Ui.BG);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -48,14 +49,16 @@ public class ProfileActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setText("我的档案");
-        title.setTextColor(Color.parseColor("#F2F4F8"));
-        title.setTextSize(24);
+        // 标题用主文字色（近黑），浅色底上保持最强的一级层次。
+        title.setTextColor(Ui.TEXT);
+        title.setTextSize(28);
         title.setTypeface(null, 1);
         root.addView(title);
 
         TextView sub = new TextView(this);
         sub.setText("只留在本机，用来判断哪条消息跟你有关。不确定的可以留空。");
-        sub.setTextColor(Color.parseColor("#7C8598"));
+        // 副标题降为次级灰，和标题拉开强弱。
+        sub.setTextColor(Ui.SUB);
         sub.setTextSize(12);
         sub.setLineSpacing(dp(this, 3), 1f);
         sub.setPadding(0, dp(this, 8), 0, dp(this, 14));
@@ -85,7 +88,7 @@ public class ProfileActivity extends Activity {
         TextView tip = new TextView(this);
         tip.setText("演示身份：" + demoLine(Engine.Profile.demo())
                 + "\n演示模式用它，不要用自己的真实信息跑演示。");
-        tip.setTextColor(Color.parseColor("#59606E"));
+        tip.setTextColor(Ui.SUB);
         tip.setTextSize(11);
         tip.setLineSpacing(dp(this, 3), 1f);
         tip.setPadding(0, dp(this, 16), 0, 0);
@@ -99,23 +102,26 @@ public class ProfileActivity extends Activity {
                    int inputType) {
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextColor(Color.parseColor("#A6AFBF"));
+        // 字段标签用次级灰，弱于输入内容。
+        t.setTextColor(Ui.SUB);
         t.setTextSize(12);
         t.setPadding(0, dp(this, 10), 0, dp(this, 6));
         root.addView(t);
 
         EditText e = new EditText(this);
         e.setHint(hint);
-        e.setHintTextColor(Color.parseColor("#525A68"));
-        e.setTextColor(Color.parseColor("#F2F4F8"));
+        // 提示文字用弱化灰，正文用主文字色，浅色底上都清晰可读。
+        e.setHintTextColor(Ui.MUTE);
+        e.setTextColor(Ui.TEXT);
         e.setTextSize(15);
         e.setSingleLine(true);
         e.setInputType(inputType);
         e.setPadding(dp(this, 12), dp(this, 10), dp(this, 12), dp(this, 10));
         GradientDrawable g = new GradientDrawable();
-        g.setColor(Color.parseColor("#151A20"));
-        g.setCornerRadius(dp(this, 10));
-        g.setStroke(dp(this, 1), Color.parseColor("#242B36"));
+        // 输入框改成白色卡片底 + 极浅描边，圆角统一 12dp。
+        g.setColor(Ui.CARD);
+        g.setCornerRadius(dp(this, 12));
+        g.setStroke(dp(this, 1), Ui.LINE);
         e.setBackground(g);
         if (value != null && !value.trim().isEmpty()) e.setText(value);
         root.addView(e, new LinearLayout.LayoutParams(
@@ -125,9 +131,10 @@ public class ProfileActivity extends Activity {
 
     Button primaryButton(String text) {
         Button b = button(text);
-        b.setTextColor(Color.parseColor("#0F1115"));
+        // 主按钮：品牌蓝底 + 纯白文字，浅色界面里唯一的高饱和块。
+        b.setTextColor(Color.WHITE);
         GradientDrawable g = new GradientDrawable();
-        g.setColor(Color.parseColor("#5FD3A6"));
+        g.setColor(Ui.BLUE);
         g.setCornerRadius(dp(this, 10));
         b.setBackground(g);
         return b;
@@ -138,11 +145,12 @@ public class ProfileActivity extends Activity {
         btn.setText(text);
         btn.setTextSize(13);
         btn.setAllCaps(false);
-        btn.setTextColor(Color.parseColor("#D7DCE6"));
+        // 次按钮：白底 + 极浅描边 + 主文字色，靠描边区分层次，不用深色底。
+        btn.setTextColor(Ui.TEXT);
         GradientDrawable g = new GradientDrawable();
-        g.setColor(Color.parseColor("#1B1F27"));
+        g.setColor(Ui.CARD);
         g.setCornerRadius(dp(this, 10));
-        g.setStroke(dp(this, 1), Color.parseColor("#2A303B"));
+        g.setStroke(dp(this, 1), Ui.LINE);
         btn.setBackground(g);
         btn.setPadding(dp(this, 16), dp(this, 8), dp(this, 16), dp(this, 8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(

@@ -10,16 +10,22 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.CalendarContract;
 import android.provider.Settings;
+import android.text.Spannable;
+import android.text.SpannableString;
 import android.text.TextUtils;
 import android.text.InputType;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.RelativeSizeSpan;
+import android.text.style.StyleSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -52,12 +58,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     Engine engine;
     LinearLayout cardList;
     TextView stats;
-    /** 顶部问候语副标题，render() 时按小时段刷新。 */
+    /** 顶部副标题（日期 + 问候），render() 时按小时段刷新。 */
     TextView sub;
-    /** 英雄卡里的大数字：今天截止的张数。 */
-    TextView heroNumber;
-    /** 英雄卡里数字右侧的说明文字。 */
-    TextView heroLabel;
     /** 撞车提醒横幅：几天内几件事挤在一起时显示在统计句下方。 */
     TextView clashBanner;
     TextView notifStatus;
@@ -135,12 +137,13 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         } catch (Exception ignored) { }
     }
 
-    /** 状态行：连着是绿的；断了是红的，点一下给出修复步骤。 */
+    /** 状态行：连着用成功绿；断了用暖橙提示，点一下给出修复步骤。 */
     void updateNotifStatus() {
         if (notifStatus == null) return;
         boolean on = EngineHolder.listenerConnected;
         notifStatus.setText(on ? "● 通知读取：已连接" : "● 通知读取：未连接，点这里重新打开");
-        notifStatus.setTextColor(Color.parseColor(on ? "#5FD3A6" : "#F2705F"));
+        // 已连接用设计规范里的成功绿，未连接用暖橙提示，不再用写死的十六进制色值。
+        notifStatus.setTextColor(on ? Ui.GREEN : Ui.ORANGE);
     }
 
     void showNotifHint() {
@@ -163,12 +166,23 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         return (int) (v * c.getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    /** 顶部问候语：按小时段返回一句人话，让首屏先有温度再谈待办。 */
+    /**
+     * 顶部问候词：只返回三个短词，界面里和日期拼在同一行，
+     * 长句子会把「M月d日 · 问候」这一行撑换行，浅色风格也不适合喊话式文案。
+     */
     String greeting() {
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
-        if (hour >= 5 && hour <= 11) return "早上好，看看今天要做什么";
-        if (hour >= 12 && hour <= 17) return "下午好，今天还剩这些事";
-        return "晚上好，把明天的事先看一眼";
+        if (hour >= 5 && hour <= 11) return "早上好";
+        if (hour >= 12 && hour <= 17) return "下午好";
+        return "晚上好";
+    }
+
+    /** 副标题整行：日期 + 星期 + 问候词，形如「11月4日 星期三 · 晚上好」。 */
+    String subLine() {
+        Calendar c = Calendar.getInstance();
+        String[] week = {"日", "一", "二", "三", "四", "五", "六"};
+        String day = c.get(Calendar.MONTH) + 1 + "月" + c.get(Calendar.DAY_OF_MONTH) + "日";
+        return day + " 星期" + week[c.get(Calendar.DAY_OF_WEEK) - 1] + " · " + greeting();
     }
 
     void buildUi() {
@@ -177,83 +191,70 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         root.setFocusableInTouchMode(true);
         // 背景统一走设计规范的底色，避免各页面色调不一致。
         root.setBackgroundColor(Ui.BG);
-        root.setPadding(dp(this, 18), dp(this, 28), dp(this, 18), dp(this, 10));
+        // 下内边距留给底部操作栏自己撑（那里带 20dp 的底部留白），
+        // 否则两处留白叠加会让列表和按钮之间空一大块。
+        root.setPadding(dp(this, 20), dp(this, 40), dp(this, 20), 0);
+
+        // 标题行：左边「今天」大标题，右边一颗圆形「更多」，与设计稿同一套对齐方式（底部对齐）。
+        LinearLayout headRow = new LinearLayout(this);
+        headRow.setOrientation(LinearLayout.HORIZONTAL);
+        headRow.setGravity(Gravity.BOTTOM);
 
         TextView title = new TextView(this);
-        title.setText("不爬楼");
+        title.setText("今天");
         title.setTextColor(Ui.TEXT);
-        title.setTextSize(24);
+        title.setTextSize(32);
         title.setTypeface(null, 1);
-        root.addView(title);
+        title.setIncludeFontPadding(false);
+        // 标题吃掉剩余宽度，把「更多」顶到最右边。
+        headRow.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+        // 圆形「更多」：白底 + 极淡投影，在浅灰背景上轻轻浮起，与设计稿的 36dp 圆一致。
+        TextView more = new TextView(this);
+        more.setText("⋯");
+        more.setTextSize(18);
+        more.setTextColor(Ui.SUB);
+        more.setGravity(Gravity.CENTER);
+        more.setIncludeFontPadding(false);
+        more.setContentDescription("更多");
+        more.setBackground(Ui.round(this, Ui.CARD, 18));
+        Ui.lift(more, this);
+        headRow.addView(more, new LinearLayout.LayoutParams(dp(this, 36), dp(this, 36)));
+        more.setOnClickListener(v -> showMoreMenu());
+        root.addView(headRow);
+
+        // 日期 + 问候：一行带过，字号降级成辅助信息，不和标题抢注意力。
         sub = new TextView(this);
-        sub.setText(greeting());
+        sub.setText(subLine());
         sub.setTextColor(Ui.SUB);
-        sub.setTextSize(13);
-        root.addView(sub);
-
-        // 今日英雄卡：把「今天还剩几件」放大成首屏第一结论，渐变底压在标题下方。
-        LinearLayout heroCard = new LinearLayout(this);
-        heroCard.setOrientation(LinearLayout.VERTICAL);
-        heroCard.setPadding(dp(this, 16), dp(this, 16), dp(this, 16), dp(this, 16));
-        heroCard.setBackground(Ui.gradient(this,
-                Color.parseColor("#1E3B34"), Color.parseColor("#161B22"), 18));
-        LinearLayout.LayoutParams heroLp = new LinearLayout.LayoutParams(
+        sub.setTextSize(14);
+        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        heroLp.topMargin = dp(this, 12);
-        heroLp.bottomMargin = dp(this, 10);
-        heroCard.setLayoutParams(heroLp);
+        subLp.topMargin = dp(this, 4);
+        root.addView(sub, subLp);
 
-        LinearLayout heroRow = new LinearLayout(this);
-        heroRow.setOrientation(LinearLayout.HORIZONTAL);
-        heroRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        heroNumber = new TextView(this);
-        heroNumber.setText("0");
-        heroNumber.setTextSize(44);
-        heroNumber.setTypeface(null, 1);
-        heroNumber.setTextColor(Ui.TEAL);
-        heroNumber.setIncludeFontPadding(false);
-        heroRow.addView(heroNumber);
-
-        LinearLayout heroText = new LinearLayout(this);
-        heroText.setOrientation(LinearLayout.VERTICAL);
-        // 数字与说明文字之间留 12dp，说明区吃掉剩余宽度。
-        LinearLayout.LayoutParams heroTextLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        heroTextLp.leftMargin = dp(this, 12);
-        heroRow.addView(heroText, heroTextLp);
-
-        heroLabel = new TextView(this);
-        heroLabel.setText("件事今天截止");
-        heroLabel.setTextSize(14);
-        heroLabel.setTypeface(null, 1);
-        heroLabel.setTextColor(Ui.TEXT);
-        heroText.addView(heroLabel);
-
-        // 统计句从 root 挪进卡片，作为英雄卡的第二行说明，字号和颜色同步降级。
+        // 统计句：不再放大数字做英雄卡，只留一行说明今天/明天/过期的分布。
         stats = new TextView(this);
-        stats.setTextSize(12);
+        stats.setTextSize(14);
         stats.setTextColor(Ui.SUB);
-        stats.setPadding(0, dp(this, 2), 0, 0);
-        heroText.addView(stats);
+        LinearLayout.LayoutParams statsLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        statsLp.topMargin = dp(this, 10);
+        root.addView(stats, statsLp);
 
-        heroCard.addView(heroRow);
-        root.addView(heroCard);
-
-        // 撞车提醒横幅：紧跟统计句、在通知状态之前，样式与卡片区分但同属暖色系。
+        // 撞车提醒横幅：浅琥珀底 + 深琥珀字，属于暖色系但不刺眼，和白色卡片区分开。
         clashBanner = new TextView(this);
-        clashBanner.setTextSize(12);
-        clashBanner.setTextColor(Color.parseColor("#FF9F7A"));
-        clashBanner.setPadding(dp(this, 12), dp(this, 8), dp(this, 12), dp(this, 8));
-        GradientDrawable bannerBg = new GradientDrawable();
-        bannerBg.setColor(Color.parseColor("#2A1A14"));
-        bannerBg.setCornerRadius(dp(this, 10));
-        bannerBg.setStroke(dp(this, 1), Color.parseColor("#5A3524"));
-        clashBanner.setBackground(bannerBg);
+        clashBanner.setTextSize(13);
+        clashBanner.setTextColor(Ui.AMBER_TX);
+        clashBanner.setPadding(dp(this, 14), dp(this, 12), dp(this, 14), dp(this, 12));
+        // 1.2 倍行距：横幅里常有两行文案，行距太紧会糊成一块。
+        clashBanner.setLineSpacing(0, 1.2f);
+        clashBanner.setBackground(Ui.round(this, Ui.AMBER_BG, 14));
         LinearLayout.LayoutParams bannerLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        bannerLp.bottomMargin = dp(this, 8);
+        bannerLp.topMargin = dp(this, 8);
+        bannerLp.bottomMargin = dp(this, 4);
         clashBanner.setLayoutParams(bannerLp);
         // 点横幅看这一组每张卡的具体时间。
         clashBanner.setOnClickListener(v -> showClashDetail());
@@ -263,18 +264,25 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
         notifStatus = new TextView(this);
         notifStatus.setTextSize(12);
-        notifStatus.setPadding(0, 0, 0, dp(this, 8));
+        notifStatus.setPadding(0, dp(this, 6), 0, dp(this, 4));
         notifStatus.setOnClickListener(v -> {
             if (demo == null && !EngineHolder.listenerConnected) showNotifHint();
         });
         root.addView(notifStatus);
 
-        HorizontalScrollView hs = new HorizontalScrollView(this);
-        hs.setHorizontalScrollBarEnabled(false);
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
+        // 工具栏：原来横向滚动的整排按钮，改成两颗小号描边胶囊，
+        // 只留在演示模式里用得上的两个入口，桌面更干净。
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setOrientation(LinearLayout.HORIZONTAL);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams toolbarLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        toolbarLp.topMargin = dp(this, 12);
+        toolbarLp.bottomMargin = dp(this, 4);
+        toolbar.setLayoutParams(toolbarLp);
+
         demoButton = button("离线演示", v -> toggleDemo());
-        bar.addView(demoButton);
+        toolbar.addView(demoButton);
         demoUpdate = button("播放群消息更新", v -> {
             if (demo == null) return;
             demo.applyUpdates();
@@ -282,16 +290,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             render();
         });
         demoUpdate.setVisibility(View.GONE);
-        bar.addView(demoUpdate);
-        liveTools = new LinearLayout(this);
-        liveTools.setOrientation(LinearLayout.HORIZONTAL);
-        // 最常用的两个入口保留在工具栏最前面，其余入口收进「更多」下拉菜单。
-        liveTools.addView(stylePrimary(button("粘贴群消息", v -> showMessageImport())));
-        liveTools.addView(stylePrimary(button("读当前群", v -> readCurrentScreen())));
-        liveTools.addView(button("更多", v -> showMoreMenu()));
-        bar.addView(liveTools);
-        hs.addView(bar);
-        root.addView(hs);
+        toolbar.addView(demoUpdate);
+        root.addView(toolbar);
 
         liveFilters = buildFilters();
         root.addView(liveFilters);
@@ -302,7 +302,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         listScroll.addView(cardList);
 
         empty = new TextView(this);
-        empty.setTextColor(Color.parseColor("#59606E"));
+        empty.setTextColor(Ui.SUB);
         empty.setTextSize(13);
         empty.setLineSpacing(dp(this, 4), 1f);
         empty.setGravity(Gravity.CENTER);
@@ -311,7 +311,50 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
         root.addView(listScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // 底部操作栏：两个最高频入口常驻在拇指够得到的位置，等宽平分。
+        // liveTools 指向这个容器，演示模式下整条栏一起隐藏。
+        liveTools = new LinearLayout(this);
+        liveTools.setOrientation(LinearLayout.HORIZONTAL);
+        liveTools.setGravity(Gravity.CENTER_VERTICAL);
+        liveTools.setPadding(0, dp(this, 10), 0, dp(this, 20));
+
+        Button paste = button("粘贴群消息", v -> showMessageImport());
+        // 次要动作：白底胶囊 + 极淡投影，和底部的蓝色主按钮形成主次。
+        paste.setBackground(Ui.round(this, Ui.CARD, 25));
+        paste.setTextColor(Ui.TEXT);
+        paste.setTextSize(15);
+        paste.setTypeface(null, 1);
+        paste.setPadding(0, 0, 0, 0);
+        Ui.lift(paste, this);
+        LinearLayout.LayoutParams pasteLp = new LinearLayout.LayoutParams(
+                0, dp(this, 50), 1f);
+        pasteLp.rightMargin = dp(this, 10);
+        liveTools.addView(paste, pasteLp);
+
+        Button read = button("读当前群", v -> readCurrentScreen());
+        // 主要动作：品牌蓝实心胶囊 + 白字粗体，全屏只有这一处最重的色块。
+        read.setBackground(Ui.round(this, Ui.BLUE, 25));
+        read.setTextColor(Color.WHITE);
+        read.setTextSize(15);
+        read.setTypeface(null, 1);
+        read.setPadding(0, 0, 0, 0);
+        liveTools.addView(read, new LinearLayout.LayoutParams(
+                0, dp(this, 50), 1f));
+
+        root.addView(liveTools, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         setContentView(root);
+        // 浅色界面：状态栏和导航栏用浅色底、深色图标，不然顶部会有一条突兀的黑边。
+        getWindow().setStatusBarColor(Ui.BG);
+        getWindow().setNavigationBarColor(Ui.BG);
+        if (Build.VERSION.SDK_INT >= 26) {
+            root.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                    | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        } else if (Build.VERSION.SDK_INT >= 23) {
+            root.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        }
         root.requestFocus();
     }
 
@@ -320,6 +363,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         row.setGravity(Gravity.CENTER_VERTICAL);
         Spinner state = new Spinner(this);
         state.setContentDescription("待办状态筛选");
+        // 去掉系统默认的灰底下拉框，浅色界面里只留文字，避免多出一块色块。
+        state.setBackgroundColor(Color.TRANSPARENT);
         Engine.CardScope[] scopes = {Engine.CardScope.ALL, Engine.CardScope.OPEN,
                 Engine.CardScope.OVERDUE, Engine.CardScope.COMPLETED};
         ArrayAdapter<String> options = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
@@ -339,6 +384,11 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         search.setTextSize(14);
         search.setHint("搜索事项、群名、地点");
         search.setContentDescription("搜索待办卡片");
+        // 搜索框同样去底色：透明背景 + 灰字，和上面的说明文字同一个层次。
+        search.setTextColor(Ui.SUB);
+        search.setHintTextColor(Ui.MUTE);
+        search.setBackgroundColor(Color.TRANSPARENT);
+        search.setPadding(dp(this, 4), dp(this, 4), dp(this, 4), dp(this, 4));
         row.addView(search, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -357,15 +407,16 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         if (listScroll != null) listScroll.scrollTo(0, 0);
     }
 
+    /** 小号描边胶囊：工具栏与列表底部「显示更多」共用，透明底 + 1dp 细描边。 */
     Button button(String text, View.OnClickListener l) {
         Button btn = new Button(this);
         btn.setText(text);
-        btn.setTextSize(13);
+        btn.setTextSize(12);
         btn.setAllCaps(false);
-        btn.setTextColor(Ui.TEXT);
-        // 次级按钮：次级面板底色 + 1dp 描边，和卡片同一套圆角语言。
-        btn.setBackground(Ui.roundStroke(this, Ui.SURFACE2, Ui.STROKE, 18, 1));
-        btn.setPadding(dp(this, 16), dp(this, 8), dp(this, 16), dp(this, 8));
+        btn.setTextColor(Ui.SUB);
+        btn.setBackground(Ui.roundStroke(this, Color.TRANSPARENT, Ui.LINE, 16, 1));
+        // 不继承系统按钮的默认内边距，左右 12dp、上下 6dp 让胶囊看起来紧凑。
+        btn.setPadding(dp(this, 12), dp(this, 6), dp(this, 12), dp(this, 6));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.rightMargin = dp(this, 8);
@@ -374,10 +425,11 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         return btn;
     }
 
-    /** 主行动按钮：实心强调色底 + 深色粗体字，只给首屏最常用的入口用。 */
+    /** 主行动按钮：品牌蓝实心底 + 白字粗体，只给底部最常用的入口用。 */
     Button stylePrimary(Button b) {
-        b.setBackground(Ui.round(this, Ui.TEAL, 18));
-        b.setTextColor(Color.parseColor("#0B1F18"));
+        b.setBackground(Ui.round(this, Ui.BLUE, 25));
+        b.setTextColor(Color.WHITE);
+        b.setTextSize(15);
         b.setTypeface(null, 1);
         return b;
     }
@@ -484,34 +536,12 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
     void render() {
         if (cardList == null) return;
-        // 每次重绘都重新算问候语：跨过中午、傍晚后回到前台文案能跟着变。
-        if (sub != null) sub.setText(greeting());
+        // 每次重绘都重算副标题：跨过中午、傍晚后回到前台，日期和问候词都能跟着变。
+        if (sub != null) sub.setText(subLine());
         cardList.removeAllViews();
         Engine shown = demo == null ? engine : demo.engine;
         // 顶部改成用户看得懂的一句话：今天几件、明天几件、有多少过期和待确认。
-        // 颜色沿用原来的绿色，不改外观基调。
         stats.setText(TodayView.summary(shown.all(), System.currentTimeMillis()));
-        // 英雄卡计数：与下方分组标题共用 TodayView.bucket，保证数字和「今天」分组张数一致。
-        long heroNow = System.currentTimeMillis();
-        int todayCount = 0;
-        List<Engine.Card> heroCards = shown.all();
-        for (int i = 0; i < heroCards.size(); i++) {
-            Engine.Card hc = heroCards.get(i);
-            if ("今天".equals(TodayView.bucket(hc.deadline, hc.needsConfirm, hc.done, heroNow))) {
-                todayCount++;
-            }
-        }
-        heroNumber.setText(String.valueOf(todayCount));
-        // 今天没有截止就弱化整块卡，别用绿色数字制造无谓压力。
-        if (todayCount == 0) {
-            heroLabel.setText("今天没有截止，轻松一下");
-            heroLabel.setTextColor(Ui.SUB);
-            heroNumber.setTextColor(Ui.SUB);
-        } else {
-            heroLabel.setText("件事今天截止");
-            heroLabel.setTextColor(Ui.TEAL);
-            heroNumber.setTextColor(Ui.TEAL);
-        }
         // 开发者统计整句不删，改为长按顶部统计句时用 Toast 展示（演示模式下同样适用）。
         stats.setOnLongClickListener(v -> {
             // 原文拼接逻辑原样保留，只是从常显改成按需查看。
@@ -534,7 +564,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             updateNotifStatus();
         } else {
             notifStatus.setText("● 离线演示 · 以下为样例群消息");
-            notifStatus.setTextColor(Color.parseColor("#5FD3A6"));
+            // 演示态同样用成功绿，保持状态行颜色语义一致。
+            notifStatus.setTextColor(Ui.GREEN);
         }
 
         List<Engine.Card> list = demo == null
@@ -569,7 +600,27 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             // 这一组没卡就不出标题，避免出现空分组。
             if (group.isEmpty()) continue;
             cardList.addView(groupHeader(groupName, group.size()));
-            for (int i = 0; i < group.size(); i++) cardList.addView(cardView(group.get(i)));
+            // 整组收进一张白卡：圆角 16dp + 极淡投影，行与行之间用细线分隔。
+            LinearLayout groupBox = new LinearLayout(this);
+            groupBox.setOrientation(LinearLayout.VERTICAL);
+            groupBox.setBackground(Ui.round(this, Ui.CARD, 16));
+            Ui.lift(groupBox, this);
+            LinearLayout.LayoutParams groupLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            groupLp.bottomMargin = dp(this, 4);
+            groupBox.setLayoutParams(groupLp);
+            for (int i = 0; i < group.size(); i++) {
+                // 第 2 行起先垫一条分隔线，从文字起始处（52dp）起画，不做通栏。
+                if (i > 0) {
+                    View line = Ui.hairline(this);
+                    LinearLayout.LayoutParams lineLp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, 1);
+                    lineLp.leftMargin = dp(this, 52);
+                    groupBox.addView(line, lineLp);
+                }
+                groupBox.addView(cardView(group.get(i)));
+            }
+            cardList.addView(groupBox);
         }
         if (list.size() > displayed) {
             cardList.addView(button("显示更多", v -> {
@@ -606,181 +657,180 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 .show();
     }
 
-    /** 分组标题：左侧一枚语义色圆点，右侧「组名  数量」，弱化样式，只做视觉分隔。 */
+    /** 分组标题：只留「组名 + 数量」两段小字，去掉圆点，靠字号和灰阶弱化，不做视觉噪音。 */
     View groupHeader(String name, int count) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
+        // 基线对齐：组名和数量字号相同，底部对齐看起来更稳。
         row.setGravity(Gravity.CENTER_VERTICAL);
 
-        // 圆点颜色跟着分组语义走，让首屏扫视时先认色再认字。
-        int dotColor;
-        if ("今天".equals(name)) {
-            dotColor = Ui.TEAL;
-        } else if ("明天".equals(name)) {
-            dotColor = Ui.BLUE;
-        } else if ("这几天".equals(name)) {
-            dotColor = Ui.SUB;
-        } else if ("待确认".equals(name)) {
-            dotColor = Ui.AMBER;
-        } else if ("已过期".equals(name)) {
-            dotColor = Ui.RED;
-        } else {
-            // 更晚、已完成统一弱化。
-            dotColor = Ui.MUTE;
-        }
-        row.addView(Ui.dot(this, dotColor, 8));
-
         TextView label = new TextView(this);
-        label.setText(name + "  " + count);
+        label.setText(name);
         label.setTextSize(13);
         label.setTypeface(null, 1);
         label.setTextColor(Ui.SUB);
-        // 圆点与文字之间留 8dp。
-        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        labelLp.leftMargin = dp(this, 8);
-        row.addView(label, labelLp);
+        label.setIncludeFontPadding(false);
+        row.addView(label);
 
-        // 分组之间留白：上 10dp 下 8dp，避免和卡片贴在一起。
+        // 数量紧跟在组名后面，颜色再浅一档，读的时候先看到组名。
+        TextView num = new TextView(this);
+        num.setText(String.valueOf(count));
+        num.setTextSize(13);
+        num.setTextColor(Ui.MUTE);
+        num.setIncludeFontPadding(false);
+        LinearLayout.LayoutParams numLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        numLp.leftMargin = dp(this, 6);
+        row.addView(num, numLp);
+
+        // 组与组之间靠上留白分开：左缩进 4dp 和卡片边缘错开一点，显得是标签而不是卡片内容。
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(this, 10);
+        lp.leftMargin = dp(this, 4);
+        lp.topMargin = dp(this, 20);
         lp.bottomMargin = dp(this, 8);
         row.setLayoutParams(lp);
         return row;
     }
 
+    /**
+     * 组内的一行：左边完成圈，右边内容列。
+     * 行本身不带背景、描边和下边距，白卡和行间距都由外层 groupBox 统一处理。
+     */
     View cardView(Engine.Card c) {
-        // 标题、时间与紧急度在整张卡里多处复用，先算好。
+        // 类型、标题和紧急度在一行里多处复用，先算好。
         boolean isExam = "exam".equals(c.kind);
+        boolean isJielong = "jielong".equals(c.kind);
         String title = c.displayTitle() == null ? "" : c.displayTitle();
         long now = System.currentTimeMillis();
         int level = TodayView.urgency(c.deadline, c.needsConfirm, c.done, now);
-        // 待确认或没有时间统一用琥珀色，其余按紧急度取色。
-        int urgent = (c.needsConfirm || c.deadline == 0) ? Ui.AMBER : Ui.urgencyColor(level);
 
-        // 外层改为横向：左边完成圈，右边内容列。
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.HORIZONTAL);
-        box.setGravity(Gravity.CENTER_VERTICAL);
-        box.setPadding(dp(this, 14), dp(this, 14), dp(this, 14), dp(this, 14));
-        // 待确认的卡片用暖色底 + 暖色描边，和普通卡片一眼区分。
-        if (c.needsConfirm) {
-            box.setBackground(Ui.roundStroke(this, Color.parseColor("#1A1712"),
-                    Color.parseColor("#4A3A1E"), 16, 1));
-        } else {
-            box.setBackground(Ui.roundStroke(this, Ui.SURFACE, Ui.STROKE, 16, 1));
-        }
-        // 已完成的卡片整体变淡。
-        if (c.done) box.setAlpha(0.5f);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(this, 10);
-        box.setLayoutParams(lp);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        // 顶部对齐：完成圈和第一行标题齐平，内容再长也不会把圈压到中间。
+        row.setGravity(Gravity.TOP);
+        row.setPadding(dp(this, 16), dp(this, 15), dp(this, 16), dp(this, 15));
+        // 已完成的行整体变淡，弱化但不至于看不清。
+        if (c.done) row.setAlpha(0.55f);
+        row.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // 完成圈：未完成是空心描边圈，已完成是实心绿底对勾；点它切换完成状态。
+        // 完成圈：未完成是空心环，已完成是绿底对勾；点它切换完成状态。
         TextView check = new TextView(this);
         check.setGravity(Gravity.CENTER);
         check.setIncludeFontPadding(false);
         if (c.done) {
             check.setText("✓");
-            check.setTextSize(14);
+            check.setTextSize(13);
             check.setTypeface(null, 1);
-            check.setTextColor(Color.parseColor("#0B1F18"));
-            check.setBackground(Ui.round(this, Ui.TEAL, 13));
+            check.setTextColor(Color.WHITE);
+            check.setBackground(Ui.disc(this, Ui.GREEN));
         } else {
-            // 空心圈，圆圈颜色就是这张卡的紧急度颜色。
             check.setText("");
-            check.setBackground(Ui.roundStroke(this, Color.TRANSPARENT, urgent, 13, 2));
+            // 待确认 / 无时间用最浅的灰，其余跟着紧急度走：过期红、三小时内橙、其他蓝。
+            int ringColor;
+            if (c.needsConfirm || c.deadline == 0) {
+                ringColor = Ui.MUTE;
+            } else if (level == 3) {
+                ringColor = Ui.RED;
+            } else if (level == 2) {
+                ringColor = Ui.ORANGE;
+            } else {
+                ringColor = Ui.BLUE;
+            }
+            check.setBackground(Ui.ring(this, ringColor, 22, 2));
         }
         check.setOnClickListener(v -> toggleDone(c));
         check.setContentDescription((c.done ? "恢复卡片：" : "完成卡片：") + title);
         LinearLayout.LayoutParams checkLp = new LinearLayout.LayoutParams(
-                dp(this, 26), dp(this, 26));
-        checkLp.rightMargin = dp(this, 12);
-        checkLp.topMargin = dp(this, 2);
-        box.addView(check, checkLp);
+                dp(this, 22), dp(this, 22));
+        checkLp.rightMargin = dp(this, 14);
+        checkLp.topMargin = dp(this, 1);
+        row.addView(check, checkLp);
 
         // 内容列吃掉剩余宽度。
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        box.addView(content, new LinearLayout.LayoutParams(0,
+        row.addView(content, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // 标题行：标题 + 「修正」入口。
-        LinearLayout heading = new LinearLayout(this);
-        heading.setOrientation(LinearLayout.HORIZONTAL);
-        heading.setGravity(Gravity.CENTER_VERTICAL);
+        // 标题：不再用 emoji 前缀，考试 / 接龙改成行尾的小标签区分。
         TextView t = new TextView(this);
-        // 考试卡：标题前加"📅 考试 "，一眼和普通待办区分开
-        t.setText(isExam ? ("📅 考试 " + title) : title);
-        t.setTextColor(Ui.TEXT);
-        t.setTextSize(16);
-        t.setTypeface(null, 1);
-        // 已完成：标题加删除线。
-        if (c.done) t.setPaintFlags(t.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
-        heading.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        // 「修正」保留原来的按钮写法，再降级成文字链接样式，不抢标题的视觉重量。
-        Button edit = button("修正", v -> showCardEdit(c));
-        edit.setBackground(null);
-        edit.setTextColor(Ui.SUB);
-        edit.setTextSize(12);
-        edit.setContentDescription("修正卡片：" + title);
-        heading.addView(edit);
-        content.addView(heading);
-
-        // 胶囊行：倒计时 + 考试 / 接龙标记。
-        LinearLayout pills = new LinearLayout(this);
-        pills.setOrientation(LinearLayout.HORIZONTAL);
-        pills.setGravity(Gravity.CENTER_VERTICAL);
-        // 倒计时文字就是原来 meta 里的倒计时部分：没有时间时只说待确认。
-        String countdown = c.deadline == 0 ? "待确认" : TodayView.countdown(c.deadline, now);
-        List<TextView> pillViews = new ArrayList<>();
-        pillViews.add(Ui.pill(this, countdown, urgent));
-        // 考试卡不再写"时间："前缀，改用一个蓝色「考试」胶囊表明类型。
-        if (isExam) pillViews.add(Ui.pill(this, "考试", Ui.BLUE));
-        // 接龙卡单独标出来，方便一眼分开两种来源。
-        if ("jielong".equals(c.kind)) pillViews.add(Ui.pill(this, "接龙", Ui.AMBER));
-        for (int i = 0; i < pillViews.size(); i++) {
-            LinearLayout.LayoutParams pillLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            // 胶囊之间留 6dp。
-            pillLp.rightMargin = dp(this, 6);
-            pills.addView(pillViews.get(i), pillLp);
+        String tag = isExam ? "  考试" : (isJielong ? "  接龙" : "");
+        SpannableString label = new SpannableString(title + tag);
+        if (tag.length() > 0) {
+            int start = title.length();
+            int end = label.length();
+            // 标签缩到 0.75 倍并加粗，颜色对应卡片类型，视觉上比标题低一档。
+            label.setSpan(new RelativeSizeSpan(0.75f), start, end,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            label.setSpan(new StyleSpan(Typeface.BOLD), start, end,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            label.setSpan(new ForegroundColorSpan(isExam ? Ui.BLUE : Ui.ORANGE), start, end,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
-        LinearLayout.LayoutParams pillRowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        pillRowLp.topMargin = dp(this, 8);
-        content.addView(pills, pillRowLp);
+        t.setText(label);
+        t.setTextColor(c.done ? Ui.MUTE : Ui.TEXT);
+        t.setTextSize(16);
+        // 已完成：标题加删除线，和其它灰色信息一起表示这件事过去了。
+        if (c.done) t.setPaintFlags(t.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
+        content.addView(t, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // 具体时间与地点：没有截止时间时整行不显示。
-        if (c.deadline != 0) {
-            // 考试卡优先显示地点（考场），其他卡仍沿用原来的渠道优先
+        // 元信息行：具体时刻 · 倒计时（· 地点/渠道）。已完成的卡不显示这一行。
+        if (!c.done) {
+            StringBuilder meta = new StringBuilder();
+            int metaColor = Ui.SUB;
+            boolean metaBold = false;
+            if (c.deadline == 0) {
+                // 没读到时间时不假装有结论，直接引导用户点开补一下。
+                meta.append("没有读到明确时间，点开补一下");
+            } else {
+                meta.append(Engine.humanDeadline(c.deadline)).append(" · ")
+                        .append(TodayView.countdown(c.deadline, now));
+                // 三小时内或已过期时整行提色加粗，扫一眼就能看出最紧的几件。
+                if (level == 2) {
+                    metaColor = Ui.ORANGE;
+                    metaBold = true;
+                } else if (level == 3) {
+                    metaColor = Ui.RED;
+                    metaBold = true;
+                }
+            }
+            // 地点 / 渠道沿用原来的优先级：考试卡看考场，其余渠道优先，接在同一行末尾。
             String where;
             if (isExam) {
-                where = !TextUtils.isEmpty(c.place) ? (" · " + c.place) : "";
+                where = TextUtils.isEmpty(c.place) ? "" : c.place;
+            } else if (c.channel != null) {
+                where = c.channel;
             } else {
-                where = c.channel != null ? (" · " + c.channel)
-                        : (c.place != null ? (" · " + c.place) : "");
+                where = c.place == null ? "" : c.place;
             }
-            TextView when = new TextView(this);
-            when.setText(Engine.humanDeadline(c.deadline) + where);
-            when.setTextColor(Ui.SUB);
-            when.setTextSize(12);
-            LinearLayout.LayoutParams whenLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            whenLp.topMargin = dp(this, 6);
-            content.addView(when, whenLp);
+            if (!TextUtils.isEmpty(where)) meta.append(" · ").append(where);
+
+            TextView info = new TextView(this);
+            info.setText(meta.toString());
+            info.setTextColor(metaColor);
+            info.setTextSize(13);
+            // 1.15 倍行距：地点和时间偶尔会折成两行，不至于糊在一起。
+            info.setLineSpacing(0, 1.15f);
+            if (metaBold) info.setTypeface(null, 1);
+            LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            infoLp.topMargin = dp(this, 4);
+            content.addView(info, infoLp);
         }
 
-        // 考试卡：要带的东西单独一行，没有就不显示
+        // 考试卡：要带的东西单独一行，没有就不显示。
         if (isExam && !TextUtils.isEmpty(c.bring)) {
             TextView b = new TextView(this);
             b.setText("带：" + c.bring);
-            b.setTextColor(Ui.BLUE);
-            b.setTextSize(12);
-            b.setPadding(0, dp(this, 4), 0, 0);
-            content.addView(b);
+            b.setTextColor(Ui.SUB);
+            b.setTextSize(13);
+            LinearLayout.LayoutParams bringLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            bringLp.topMargin = dp(this, 3);
+            content.addView(b, bringLp);
         }
 
         // 来源行：群名 · 发送者 · 已更新 / 已完成。
@@ -788,24 +838,35 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         src.setText(c.groupName + " · " + c.sender + (c.updated ? " · 已更新" : "")
                 + (c.done ? " · 已完成" : ""));
         src.setTextColor(Ui.MUTE);
-        src.setTextSize(11);
+        src.setTextSize(12);
         LinearLayout.LayoutParams srcLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        srcLp.topMargin = dp(this, 8);
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        srcLp.topMargin = dp(this, 5);
         content.addView(src, srcLp);
 
         // 识别原因提示：只在引擎给出原因时出现。
         if (!TextUtils.isEmpty(c.reason)) {
             TextView r = new TextView(this);
             r.setText("⚠ " + c.reason);
-            r.setTextColor(Ui.AMBER);
-            r.setTextSize(11);
-            r.setPadding(0, dp(this, 6), 0, 0);
-            content.addView(r);
+            r.setTextColor(Ui.ORANGE);
+            r.setTextSize(12);
+            LinearLayout.LayoutParams reasonLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            reasonLp.topMargin = dp(this, 5);
+            content.addView(r, reasonLp);
         }
 
-        box.setOnClickListener(v -> showSource(c));
-        return box;
+        // 「修正」入口从标题右侧挪到长按：短按看原文，长按改标题和时间。
+        // 原来的按钮写法（含无障碍描述）保留但不挂到视图树上，避免一行里再挤一个小按钮。
+        Button edit = button("修正", v -> showCardEdit(c));
+        edit.setContentDescription("修正卡片：" + title);
+
+        row.setOnClickListener(v -> showSource(c));
+        row.setOnLongClickListener(v -> {
+            showCardEdit(c);
+            return true;
+        });
+        return row;
     }
 
     void showSource(Engine.Card c) {

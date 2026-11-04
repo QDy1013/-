@@ -17,7 +17,7 @@
         android:label="不爬楼"
         android:icon="@drawable/ic_launcher"
         android:allowBackup="false"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
             android:name=".MainActivity"
