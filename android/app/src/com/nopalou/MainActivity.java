@@ -69,6 +69,11 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     private Button demoButton;
     private Button demoUpdate;
     private LinearLayout liveTools;
+    /** 手动导入的两个兜底入口：仍然构造出来备用，但不再常驻底部栏，只从「更多」菜单进入。 */
+    private Button pasteButton;
+    private Button readButton;
+    /** 底部栏唯一的整宽主按钮：开启自动读取（通知读取权限）。 */
+    private Button autoReadButton;
     private LinearLayout liveFilters;
     private ScrollView listScroll;
     private String keywords = "";
@@ -137,13 +142,54 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         } catch (Exception ignored) { }
     }
 
-    /** 状态行：连着用成功绿；断了用暖橙提示，点一下给出修复步骤。 */
+    /**
+     * 「自动读取状态」小条：主界面最重要的一句话。
+     * 已连接 → 一行绿色小字，说明自动读取在跑、最近一条是什么时候；
+     * 未连接 → 整条变成浅琥珀可点提醒条，点一下给出重新开启的步骤；
+     * 离线演示 → 保持原来的演示提示（由 render() 单独处理）。
+     */
     void updateNotifStatus() {
         if (notifStatus == null) return;
-        boolean on = EngineHolder.listenerConnected;
-        notifStatus.setText(on ? "● 通知读取：已连接" : "● 通知读取：未连接，点这里重新打开");
-        // 已连接用设计规范里的成功绿，未连接用暖橙提示，不再用写死的十六进制色值。
-        notifStatus.setTextColor(on ? Ui.GREEN : Ui.ORANGE);
+        boolean on = demo == null && EngineHolder.listenerConnected;
+        if (on) {
+            // 已连接：绿点 + 绿色小字，背景去掉，回到干净的一行文字。
+            long last = EngineHolder.lastReceivedAt;
+            String line;
+            if (last == 0) {
+                line = "● 通知读取：已连接 · 自动读取已开启，等群里来新消息";
+            } else {
+                String group = EngineHolder.lastReceivedGroup;
+                line = "● 通知读取：已连接 · 自动读取中 · 最近一条 " + relativeTime(last)
+                        + (TextUtils.isEmpty(group) ? "" : "（" + group + "）");
+            }
+            notifStatus.setText(line);
+            notifStatus.setTextColor(Ui.GREEN);
+            notifStatus.setTextSize(12);
+            notifStatus.setBackground(null);
+            notifStatus.setPadding(0, dp(this, 6), 0, dp(this, 4));
+        } else {
+            // 未连接：整条做成可点的琥珀提醒条，比一行灰字更像「该处理的事」。
+            notifStatus.setText("通知读取：未连接。点这里开启，群消息就会自动变成待办");
+            notifStatus.setTextColor(Ui.AMBER_TX);
+            notifStatus.setTextSize(12);
+            notifStatus.setBackground(Ui.round(this, Ui.AMBER_BG, 12));
+            notifStatus.setPadding(dp(this, 14), dp(this, 10), dp(this, 14), dp(this, 10));
+        }
+    }
+
+    /**
+     * 相对时间：不到 1 分钟「刚刚」，不到 60 分钟「N 分钟前」，
+     * 不到 24 小时「N 小时前」，再久就是「N 天前」。手机时间被回拨时不出现负数。
+     */
+    String relativeTime(long when) {
+        long diff = System.currentTimeMillis() - when;
+        if (diff < 0) diff = 0;
+        long minutes = diff / 60000L;
+        if (minutes < 1) return "刚刚";
+        if (minutes < 60) return minutes + " 分钟前";
+        long hours = minutes / 60;
+        if (hours < 24) return hours + " 小时前";
+        return (hours / 24) + " 天前";
     }
 
     void showNotifHint() {
@@ -262,13 +308,20 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         clashBanner.setVisibility(View.GONE);
         root.addView(clashBanner);
 
+        // 自动读取状态小条：默认一行绿色小字，未连接时整条变成可点的琥珀提醒条（样式在 updateNotifStatus 里切换）。
         notifStatus = new TextView(this);
         notifStatus.setTextSize(12);
+        // 1.15 倍行距：琥珀条里两行文案时不至于挤在一起。
+        notifStatus.setLineSpacing(0, 1.15f);
         notifStatus.setPadding(0, dp(this, 6), 0, dp(this, 4));
         notifStatus.setOnClickListener(v -> {
+            // 只有未连接时才可点：点一次给出重新授权步骤；已连接后点击不做任何事。
             if (demo == null && !EngineHolder.listenerConnected) showNotifHint();
         });
-        root.addView(notifStatus);
+        LinearLayout.LayoutParams notifLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        notifLp.topMargin = dp(this, 6);
+        root.addView(notifStatus, notifLp);
 
         // 工具栏：原来横向滚动的整排按钮，改成两颗小号描边胶囊，
         // 只留在演示模式里用得上的两个入口，桌面更干净。
@@ -312,35 +365,42 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         root.addView(listScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // 底部操作栏：两个最高频入口常驻在拇指够得到的位置，等宽平分。
-        // liveTools 指向这个容器，演示模式下整条栏一起隐藏。
+        // 底部栏：全自动优先，这里不再常驻「粘贴群消息 / 读当前群」。
+        // 只有还没连上通知读取时，才冒出一颗整宽的蓝色主按钮「开启自动读取」；
+        // 连上之后底部整条收掉，用户什么都不用点，卡片自己出现。
         liveTools = new LinearLayout(this);
         liveTools.setOrientation(LinearLayout.HORIZONTAL);
         liveTools.setGravity(Gravity.CENTER_VERTICAL);
         liveTools.setPadding(0, dp(this, 10), 0, dp(this, 20));
 
-        Button paste = button("粘贴群消息", v -> showMessageImport());
-        // 次要动作：白底胶囊 + 极淡投影，和底部的蓝色主按钮形成主次。
-        paste.setBackground(Ui.round(this, Ui.CARD, 25));
-        paste.setTextColor(Ui.TEXT);
-        paste.setTextSize(15);
-        paste.setTypeface(null, 1);
-        paste.setPadding(0, 0, 0, 0);
-        Ui.lift(paste, this);
-        LinearLayout.LayoutParams pasteLp = new LinearLayout.LayoutParams(
-                0, dp(this, 50), 1f);
-        pasteLp.rightMargin = dp(this, 10);
-        liveTools.addView(paste, pasteLp);
+        // 手动导入降级成兜底：两个入口照旧构造（功能完整保留），但不再挂到底部栏，
+        // 改从「更多」菜单里的「手动补录：…」进入。
+        pasteButton = button("粘贴群消息", v -> showMessageImport());
+        // 次要动作：白底胶囊 + 极淡投影，留作备用样式。
+        pasteButton.setBackground(Ui.round(this, Ui.CARD, 25));
+        pasteButton.setTextColor(Ui.TEXT);
+        pasteButton.setTextSize(15);
+        pasteButton.setTypeface(null, 1);
+        pasteButton.setPadding(0, 0, 0, 0);
+        Ui.lift(pasteButton, this);
 
-        Button read = button("读当前群", v -> readCurrentScreen());
-        // 主要动作：品牌蓝实心胶囊 + 白字粗体，全屏只有这一处最重的色块。
-        read.setBackground(Ui.round(this, Ui.BLUE, 25));
-        read.setTextColor(Color.WHITE);
-        read.setTextSize(15);
-        read.setTypeface(null, 1);
-        read.setPadding(0, 0, 0, 0);
-        liveTools.addView(read, new LinearLayout.LayoutParams(
-                0, dp(this, 50), 1f));
+        readButton = button("读当前群", v -> readCurrentScreen());
+        // 主要动作：品牌蓝实心胶囊 + 白字粗体。
+        readButton.setBackground(Ui.round(this, Ui.BLUE, 25));
+        readButton.setTextColor(Color.WHITE);
+        readButton.setTextSize(15);
+        readButton.setTypeface(null, 1);
+        readButton.setPadding(0, 0, 0, 0);
+
+        // 底部栏唯一的动作：开启自动读取。
+        autoReadButton = button("开启自动读取", v -> showNotifHint());
+        autoReadButton.setBackground(Ui.round(this, Ui.BLUE, 25));
+        autoReadButton.setTextColor(Color.WHITE);
+        autoReadButton.setTextSize(15);
+        autoReadButton.setTypeface(null, 1);
+        autoReadButton.setPadding(0, 0, 0, 0);
+        liveTools.addView(autoReadButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(this, 50)));
 
         root.addView(liveTools, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -474,27 +534,40 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
      */
     void showMoreMenu() {
         new AlertDialog.Builder(this)
-                .setItems(new String[]{"到期提醒", "我的档案", "通知读取权限", "通知回放", "清空本机数据"},
+                .setItems(new String[]{"让它一直在后台运行", "到期提醒", "我的档案", "通知读取权限",
+                                "手动补录：粘贴群消息", "手动补录：读当前群", "通知回放", "清空本机数据"},
                         (d, which) -> {
                             switch (which) {
                                 case 0:
+                                    // 后台保活说明：国产 ROM 会杀后台，先把这一步教明白。
+                                    showKeepAliveTips();
+                                    break;
+                                case 1:
                                     // 到期提醒设置
                                     showDeadlineReminderSettings();
                                     break;
-                                case 1:
+                                case 2:
                                     // 我的档案
                                     startActivity(new Intent(this, ProfileActivity.class));
                                     break;
-                                case 2:
+                                case 3:
                                     // 通知读取权限：跳到系统的通知使用权页面
                                     startActivity(new Intent(
                                             "android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"));
                                     break;
-                                case 3:
+                                case 4:
+                                    // 手动补录一：粘贴一条群消息（兜底路径）
+                                    showMessageImport();
+                                    break;
+                                case 5:
+                                    // 手动补录二：读当前群屏幕（兜底路径）
+                                    readCurrentScreen();
+                                    break;
+                                case 6:
                                     // 通知回放
                                     startReplay();
                                     break;
-                                case 4:
+                                case 7:
                                     // 清空本机数据：确认后清掉全部卡片和近期消息，并落盘
                                     new AlertDialog.Builder(this)
                                             .setTitle("清空待办和近期消息？")
@@ -512,6 +585,31 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                                     break;
                             }
                         })
+                .show();
+    }
+
+    /**
+     * 「让它一直在后台运行」：四步保活说明。
+     * 自动读取只有在进程活着时才工作，所以这一页比任何手动入口都重要。
+     */
+    void showKeepAliveTips() {
+        new AlertDialog.Builder(this)
+                .setTitle("保持自动读取不被系统杀掉")
+                .setMessage("1. 在系统设置里允许「不爬楼」自启动和后台运行（vivo：设置 > 应用与权限 > 权限管理 > 自启动）。\n"
+                        + "2. 电池设置里把「不爬楼」设为不限制或允许后台高耗电。\n"
+                        + "3. 在最近任务里不要上滑清掉它；可以长按卡片锁定。\n"
+                        + "4. 重启手机后打开一次 App，确认状态是「已连接」。")
+                .setPositiveButton("去电池设置", (d, w) -> {
+                    try {
+                        startActivity(new Intent(
+                                android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                    } catch (Exception ignored) {
+                        // 个别设备没有这个页面，给一句提示，不让点击崩掉。
+                        Toast.makeText(this, "这台手机没有电池优化页面，请到系统设置里手动找",
+                                Toast.LENGTH_LONG).show();
+                    }
+                })
+                .setNegativeButton("知道了", null)
                 .show();
     }
 
@@ -566,6 +664,13 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             notifStatus.setText("● 离线演示 · 以下为样例群消息");
             // 演示态同样用成功绿，保持状态行颜色语义一致。
             notifStatus.setTextColor(Ui.GREEN);
+            notifStatus.setBackground(null);
+            notifStatus.setPadding(0, dp(this, 6), 0, dp(this, 4));
+        }
+        // 底部栏每次刷新都按当前连接状态重算：只有「未连接且不是演示」才露出「开启自动读取」。
+        if (liveTools != null) {
+            boolean needSetup = demo == null && !EngineHolder.listenerConnected;
+            liveTools.setVisibility(needSetup ? View.VISIBLE : View.GONE);
         }
 
         List<Engine.Card> list = demo == null
@@ -577,8 +682,12 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             } else if (!keywords.trim().isEmpty() || scope != Engine.CardScope.ALL) {
                 empty.setText("没有符合当前搜索或筛选的卡片。");
             } else {
-                // 空状态改成更温暖的引导：告诉用户下一步点哪里，而不是只描述"没有卡片"。
-                empty.setText("这里还没有待办。\n点「读当前群」或「粘贴群消息」，把群里的事变成清单。");
+                // 空状态也按连接状态分开说：已连接就承诺「会自动来」，没连上才提手动导入当兜底。
+                if (EngineHolder.listenerConnected) {
+                    empty.setText("自动读取已开启。\n群里有作业、考试、接龙时，会自动出现在这里。");
+                } else {
+                    empty.setText("还没有待办。\n开启自动读取后，群里的作业、考试、接龙会自动出现在这里，不用手动导入。");
+                }
             }
             cardList.addView(empty);
             return;

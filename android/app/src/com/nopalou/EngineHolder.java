@@ -22,6 +22,12 @@ public class EngineHolder {
     /** 系统是否真的把通知监听服务连上了。主界面靠它显示"通知读取"状态。 */
     public static volatile boolean listenerConnected = false;
 
+    /** 最近一次自动收到消息的时间（毫秒）；还没收到过就是 0，界面据此显示"最近一次自动收到"。 */
+    public static volatile long lastReceivedAt = 0L;
+
+    /** 最近一次自动收到消息所属的群名；还没收到过就是 null。 */
+    public static volatile String lastReceivedGroup = null;
+
     /** 连接状态变了，让界面重画一次；引擎或界面还没准备好就跳过，不在这里加载模型。 */
     public static void refreshCards() {
         final Engine.SelectedListener l = engine == null ? null : engine.listener;
