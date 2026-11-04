@@ -65,7 +65,7 @@ EXAM_PLACE_RE = re.compile(r"地点[ \t]*[：:]?[ \t]*([^，。；\n]{2,12})")
 # 楼名 + 房号也算地点：教一/教二…/教九/教学楼/实验楼/理科楼/综合楼 后跟数字房号（可带字母），
 # 整段写进 place，如"教二305""实验楼305""教一102"
 EXAM_BUILDING_PLACE_RE = re.compile(
-    r"((?:教学楼|实验楼|理科楼|综合楼|教[一二三四五六七八九])\s*\d+[A-Za-z0-9]*)"
+    r"((?:教学楼|实验楼|理科楼|综合楼|教[一二三四五六七八九])\s*[A-Za-z]?\d+[A-Za-z0-9]*)"
 )
 
 # 撤销/更正专用词：出现在任何卡里都说明不了指向哪一条，匹配时排除
@@ -218,6 +218,13 @@ class Pipeline:
     TEACHER_HINTS = ("老师", "辅导员", "班长", "课代表", "社长", "主任")
     QUESTION_HINTS = ("吗", "？", "?", "呢", "吧？")
 
+    @staticmethod
+    def _is_question(text: str) -> bool:
+        """是不是在提问：含"吗/？/?/吧？"，或者整句以"呢"收尾。
+        句中的"呢"是语气词（"周五之前呢，把报告交一下"），不算提问。"""
+        t = text.strip()
+        return any(q in t for q in ("吗", "？", "?", "吧？")) or t.rstrip("。！!~… ").endswith("呢")
+
     def _rule_label(self, vec: dict[str, float], text: str, sender: str) -> str | None:
         has_time = vec.get("M:has_time", 0) > 0
         has_action = vec.get("M:has_action", 0) > 0
@@ -225,7 +232,7 @@ class Pipeline:
         at_all = vec.get("M:at_all", 0) > 0
         notifier = vec.get("M:sender_notifier", 0) > 0
         is_teacher = any(h in (sender or "") for h in self.TEACHER_HINTS)
-        asking = any(q in text for q in self.QUESTION_HINTS)
+        asking = self._is_question(text)
         first_person = text.strip().startswith(("我", "俺", "咱们"))
 
         # 明确的"动作 + 时限"就是待办，哪怕句式没见过
@@ -361,6 +368,9 @@ class Pipeline:
         rule = self._rule_label(vec, text, sender) if self.use_rules else None
         if rule:
             label, prob = rule, max(prob, 0.75)
+        # 提问不是待办（"周五之前交实验报告吗"）：统计模型误判成待办时在这里拦下
+        if label == ACTION and self._is_question(text):
+            label = DISCUSSION
         self.stats.sender_notify[(gid, sender)] += 1 if label in (ACTION, NOTICE) else 0
 
         rel, rel_reason = relevance(text, msg.get("group_name", ""), self.profile) \

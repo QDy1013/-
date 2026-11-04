@@ -31,6 +31,8 @@ RE_TITLE_HOUR = re.compile(
 RE_TITLE_CLOCK = re.compile(
     _TITLE_PERIOD + r"\s*(\d{1,2})\s*[:：]\s*(\d{2})\s*(?:之前|以前|前|截止)?")
 # "本周内/这周内/下周"后面的"内"和"前/之前"一样整段删掉
+# "这个周末前/这周末/本周末"整段删（必须在 RE_TITLE_WEEK 之前，否则只会删掉"本周"留下"末前"）
+RE_TITLE_WEEKEND = re.compile(r"(?:这个|这|本|下个|下)?\s*周末\s*(?:之前|以前|前|截止|内)?")
 RE_TITLE_WEEK = re.compile(
     r"(下|本|这)(周|星期|礼拜)[一二三四五六日天]?\s*(?:之前|以前|前|截止|内)?")
 # "本月底/月底/月末/本月内/月内"（含可选"前/之前"）
@@ -53,6 +55,7 @@ def clean_title(clause: str) -> str:
     s = RE_TITLE_HOUR.sub("", s)
     # hh:mm 前面同样可能带时段词，后面同样可能带"之前/前/截止"
     s = RE_TITLE_CLOCK.sub("", s)
+    s = RE_TITLE_WEEKEND.sub("", s)
     s = RE_TITLE_WEEK.sub("", s)
     s = RE_TITLE_MONTH.sub("", s)
     s = RE_TITLE_DAY.sub("", s)

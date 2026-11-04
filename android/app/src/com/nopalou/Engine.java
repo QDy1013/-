@@ -127,6 +127,9 @@ public class Engine {
     static final Pattern P_CLEAN_CLOCK = Pattern.compile(
             TITLE_PERIOD + "\\s*(\\d{1,2})\\s*[:：]\\s*(\\d{2})\\s*(?:之前|以前|前|截止)?");
     // "本周内/这周内/下周"后面的"内"和"前/之前"一样整段删掉
+    // "这个周末前/这周末/本周末"整段删（必须在 P_CLEAN_WEEK 之前）
+    static final Pattern P_CLEAN_WEEKEND = Pattern.compile(
+            "(?:这个|这|本|下个|下)?\\s*周末\\s*(?:之前|以前|前|截止|内)?");
     static final Pattern P_CLEAN_WEEK = Pattern.compile(
             "(下|本|这)(周|星期|礼拜)[一二三四五六日天]?\\s*(?:之前|以前|前|截止|内)?");
     // "本月底/月底/月末/本月内/月内"（含可选"前/之前"）
@@ -709,7 +712,7 @@ public class Engine {
 
     static String findPlace(String t) {
         // "教三201""三教201"两种说法都认
-        Matcher m = Pattern.compile("(三教|二教|一教|四教|五教|教三|教二|教一|教四|教五|实验楼|图书馆|体育馆|报告厅|线上|腾讯会议)[^，。；\\n]{0,8}").matcher(t);
+        Matcher m = Pattern.compile("(教学楼|综合楼|理科楼|三教|二教|一教|四教|五教|教三|教二|教一|教四|教五|实验楼|图书馆|体育馆|报告厅|线上|腾讯会议)[^，。；\\n]{0,8}").matcher(t);
         if (m.find()) return m.group(0).trim();
         return null;
     }
@@ -765,6 +768,7 @@ public class Engine {
         s = P_CLEAN_HOUR.matcher(s).replaceAll("");
         // hh:mm 前面同样可能带时段词，后面同样可能带"之前/前/截止"
         s = P_CLEAN_CLOCK.matcher(s).replaceAll("");
+        s = P_CLEAN_WEEKEND.matcher(s).replaceAll("");
         s = P_CLEAN_WEEK.matcher(s).replaceAll("");
         s = P_CLEAN_MONTH.matcher(s).replaceAll("");
         s = P_CLEAN_DAY.matcher(s).replaceAll("");
@@ -828,7 +832,14 @@ public class Engine {
     String[] jielongInfo(String text) {   // {title, joined("1"/"0"), rosterSize}
         String title = null;
         for (String line : text.split("\\n")) {
-            if (line.trim().isEmpty() || line.trim().startsWith("#接龙")) continue;
+            if (line.trim().isEmpty()) continue;
+            if (line.trim().startsWith("#接龙")) {
+                // "#接龙 周末聚餐，周五18点前报名"：标题写在同一行时，取标签后面第一个子句
+                String rest = line.trim().substring("#接龙".length()).replaceAll("^[ ：:]+", "");
+                rest = rest.split("[，,。；;（(]")[0].trim();
+                if (!rest.isEmpty()) { title = rest; break; }
+                continue;
+            }
             Matcher mt = P_TITLE.matcher(line);
             title = mt.find() ? line.substring(0, mt.start()).trim() : line.trim();
             break;
@@ -852,11 +863,19 @@ public class Engine {
     }
 
     // ---------- 主流程 ----------
+    /** 是不是在提问：含"吗/？/?/吧？"，或者整句以"呢"收尾；句中的"呢"是语气词，不算提问。 */
+    static boolean isQuestion(String text) {
+        String t = text == null ? "" : text.trim();
+        if (t.contains("吗") || t.contains("？") || t.contains("?") || t.contains("吧？")) return true;
+        String u = t.replaceAll("[。！!~… ]+$", "");
+        return u.endsWith("呢");
+    }
+
     public String ruleLabel(Map<String, Double> f, String text, String sender) {
         boolean hasTime = f.get("M:has_time") > 0, hasAction = f.get("M:has_action") > 0;
         boolean atMe = f.get("M:at_me") > 0, atAll = f.get("M:at_all") > 0;
         boolean notifier = f.get("M:sender_notifier") > 0, teacher = containsAny(sender, TEACHER_HINTS);
-        boolean asking = text.contains("吗") || text.contains("？") || text.contains("?") || text.contains("呢");
+        boolean asking = isQuestion(text);
         boolean firstPerson = text.trim().startsWith("我") || text.trim().startsWith("俺")
                 || text.trim().startsWith("咱们");
         if (firstPerson && hasAction) return "discussion";
@@ -931,6 +950,8 @@ public class Engine {
         String label = LABELS[idx];
         String rule = ruleLabel(f, t, m.sender);
         if (rule != null) label = rule;
+        // 提问不是待办（"周五之前交实验报告吗"）：统计模型误判成待办时在这里拦下
+        if ("action".equals(label) && isQuestion(t)) label = "discussion";
         observe(m.groupId, m.sender, "action".equals(label) || "notice".equals(label));
 
         double rel = relevance(t, m.groupName);

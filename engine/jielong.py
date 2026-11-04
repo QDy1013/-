@@ -51,6 +51,11 @@ def parse(text: str, send: datetime) -> Jielong:
     title = None
     for line in lines:
         if line.strip().startswith("#接龙"):
+            # "#接龙 周末聚餐，周五18点前报名"：标题写在同一行时，取标签后面第一个子句
+            rest = re.split(r"[，,。；;（(]", line.strip()[len("#接龙"):].strip(" ：:"))[0].strip()
+            if rest:
+                title = rest
+                break
             continue
         m = RE_TITLE.search(line)
         title = line[:m.start()].strip() if m else line.strip()
