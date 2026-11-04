@@ -145,28 +145,31 @@ def parse_deadline(text: str, send: datetime) -> TimeParse:
     # 2) 抓时刻：先定位钟点，再只取钟点之前的时段词（避免"晚了不收"抢走"明早"）
     hh = mm = None
     has_time = False
-    colon = re.search(r"(\d{1,2}):(\d{2})", t)
+    colon = re.search(r"(\d{1,2})\s*:\s*(\d{2})", t)
     mh = RE_HOUR.search(t)
-    colon_ok = bool(colon) and 0 <= int(colon.group(1)) <= 23
-    clock = colon if colon_ok else mh
+    clock = colon or mh
     period = _find_period(t, clock.start()) if clock else None
 
-    if colon_ok:
+    if colon:
         hh, mm = int(colon.group(1)), int(colon.group(2))
+        if hh > 23 or mm > 59:
+            return TimeParse(None, False, "none", note="非法时刻")
         hh = _period_adjust(hh, period)
         has_time = True
     elif mh:
         v = _cn2int(mh.group(1))
-        if v is not None and 0 <= v <= 24:
-            hh = v % 24
-            if mh.group(2):              # 钟点后的"半" = 30 分
-                mm = 30
-            elif mh.group(3):
-                mm = _cn2int(mh.group(3)) or 0
-            else:
-                mm = 0
-            hh = _period_adjust(hh, period)
-            has_time = True
+        if v is None or not 0 <= v <= 24:
+            return TimeParse(None, False, "none", note="非法时刻")
+        hh = v % 24
+        mm = 0
+        if mh.group(2):
+            mm = 30
+        elif mh.group(3):
+            mm = _cn2int(mh.group(3))
+        if mm is None or not 0 <= mm <= 59:
+            return TimeParse(None, False, "none", note="非法时刻")
+        hh = _period_adjust(hh, period)
+        has_time = True
 
     # 3) 抓日期：绝对日期 > 相对日 > 星期 > 模糊锚点
     base: date | None = None

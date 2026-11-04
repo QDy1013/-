@@ -38,13 +38,18 @@ EXAM_SUBMIT_WORDS = ("交", "提交", "上传")
 EXAM_PREP_WORDS = ("看完", "看一下", "看看", "复习好", "预习", "背完")
 # 改期词：和考试词同时出现时只改原卡时间，不新建卡
 EXAM_RESCHED_WORDS = ("改到", "推迟到", "延期到", "提前到", "调整到", "挪到")
+EXAM_NEW_TIME_RE = re.compile("|".join((*EXAM_RESCHED_WORDS, "改为", "改成", "调整为")))
 # 提问词 / 第一人称开头：命中就不出卡、也不改卡
 EXAM_ASK_WORDS = ("吗", "？", "?", "呢", "什么", "几点", "哪")
 EXAM_ASK_PREFIX = ("我", "俺", "咱")
+EXAM_REFERENCE_SPLIT = re.compile(r"[，,。；;\n！!？?：:]")
+EXAM_REFERENCE_PREFIX = re.compile(
+    r"^(?:@\s*(?:所有人|全体)\s*|(?:关于|更正(?:一下)?|通知|提醒|取消|作废|撤销(?:该)?|撤回(?:该)?|忽略|原定的?|这场|那场)\s*)+"
+)
 # "带学生证和2B铅笔" → 学生证和2B铅笔（到下一个标点为止）
-EXAM_BRING_RE = re.compile(r"(?:携带|自备|带)\s*([^，。；！\n]+)")
+EXAM_BRING_RE = re.compile(r"(?:携带|自备|带)[ \t]*[：:]?[ \t]*([^，。；;！!\r\n]*)")
 # find_place 只认"三教"这类写法，考试卡补一条"地点…"兜底（如"教三201"）
-EXAM_PLACE_RE = re.compile(r"地点\s*([^，。；\n]{2,12})")
+EXAM_PLACE_RE = re.compile(r"地点[ \t]*[：:]?[ \t]*([^，。；\n]{2,12})")
 # 楼名 + 房号也算地点：教一/教二…/教九/教学楼/实验楼/理科楼/综合楼 后跟数字房号（可带字母），
 # 整段写进 place，如"教二305""实验楼305""教一102"
 EXAM_BUILDING_PLACE_RE = re.compile(
@@ -294,6 +299,11 @@ class Pipeline:
 
         # 变更 / 撤销：优先处理，避免把"改到下周"当成新待办
         rev = self.detect_revision(text)
+        exam_word = self._exam_word(text)
+        if exam_word and (any(w in text for w in EXAM_RESCHED_WORDS) or (rev and exam_word in EXAM_WORDS)):
+            target = self._apply_exam_revision(gid, sender, text, exam_word, rev, ts)
+            self._remember(msg)
+            return [target] if target is not None else produced
         if rev:
             target = self._revision_target(msg, text)
             if target is not None:
@@ -351,29 +361,11 @@ class Pipeline:
 
         # 考试/日程卡：故意放在撤销/更正和接龙之后、按分类标签分流之前，
         # 这样分类器判成"通知"甚至"闲聊"的考试消息也照样出卡（docs/考试卡规则.md）
-        exam_word = self._exam_word(text)
         if exam_word:
             asking = self._exam_asking(text)
             first_person = text.strip().startswith(EXAM_ASK_PREFIX)
             trusted = any(h in (sender or "") for h in self.TEACHER_HINTS) \
                 or AT_ALL_RE.search(text) is not None
-            target = self._exam_card_in(gid)
-
-            # 改期：改到 / 推迟到 / 延期到 / 提前到 / 调整到 / 挪到
-            if any(w in text for w in EXAM_RESCHED_WORDS):
-                # 只在同群已有考试卡、发送者可信或是原卡发送者、且不是提问/第一人称时改时间
-                if target is not None and (trusted or sender == target.sender) \
-                        and not asking and not first_person:
-                    tp = parse_deadline(text, ts)
-                    if tp.value is not None:
-                        target.deadline = tp.value
-                        target.needs_confirm = tp.confidence == "low"
-                        target.updated = True
-                        produced.append(target)
-                # 提问、不可信的人说的、别的群发的：原卡不动，也不出新卡
-                self._remember(msg)
-                return produced
-
             # 新考试/日程：考试词 + 具体时间 + 可信发送者 + 非提问/非第一人称
             if trusted and not asking and not first_person:
                 ex = extract(text, ts)
@@ -582,12 +574,41 @@ class Pipeline:
         m = EXAM_BUILDING_PLACE_RE.search(text)
         return m.group(1).strip() if m else ""
 
-    def _exam_card_in(self, group_id: str) -> Card | None:
-        """本群最新的、未撤销的考试卡（改期只认这一张，跨群不认）。"""
-        for c in reversed(self.cards):
-            if c.kind == "exam" and c.group_id == group_id and not c.revoked:
-                return c
-        return None
+    def _apply_exam_revision(self, group_id: str, sender: str, text: str, hit: str,
+                             revision: str | None, sent_at: datetime) -> Card | None:
+        """考试更正必须唯一匹配同群的一张考试卡。"""
+        if self._exam_asking(text) or text.strip().startswith(EXAM_ASK_PREFIX):
+            return None
+        reference = hit
+        for part in EXAM_REFERENCE_SPLIT.split(text):
+            index = part.find(hit)
+            if index < 0:
+                continue
+            prefix = EXAM_REFERENCE_PREFIX.sub("", part[:index].strip())
+            name = "".join((prefix + hit).lower().split())
+            if len(name) > len(reference):
+                reference = name
+
+        matches = [card for card in self.cards if card.kind == "exam" and card.group_id == group_id
+                   and not card.revoked and reference in "".join(card.source_text.lower().split())]
+        if len(matches) != 1:
+            return None
+        target = matches[0]
+        trusted = any(h in sender for h in self.TEACHER_HINTS) or AT_ALL_RE.search(text) is not None
+        if not trusted and (not sender or sender != target.sender):
+            return None
+        if revision == "revoke":
+            target.revoked = True
+            self.cards = [card for card in self.cards if card is not target]
+            self.by_source.pop(target.source_msg_id, None)
+            return None
+        deadline = parse_deadline(EXAM_NEW_TIME_RE.split(text)[-1], sent_at)
+        if deadline.value is None:
+            return None
+        target.deadline = deadline.value
+        target.needs_confirm = deadline.confidence == "low"
+        target.updated = True
+        return target
 
     def _revision_target(self, msg: dict, text: str) -> Card | None:
         """找这条撤销/更正真正指向的那张卡：只在本群、从新到旧找，对不上返回 None。

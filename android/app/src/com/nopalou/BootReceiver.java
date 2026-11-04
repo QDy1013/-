@@ -15,7 +15,10 @@ public class BootReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (context == null) return;
+        if (context == null || intent == null) return;
+        String action = intent.getAction();
+        if (!Intent.ACTION_BOOT_COMPLETED.equals(action) && !Intent.ACTION_LOCKED_BOOT_COMPLETED.equals(action)
+                && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) return;
 
         try {
             NotificationListenerService.requestRebind(new ComponentName(context, NotifListener.class));
@@ -23,7 +26,7 @@ public class BootReceiver extends BroadcastReceiver {
         }
 
         try {
-            EngineHolder.get(context);
+            ReminderReceiver.refresh(context, EngineHolder.get(context));
         } catch (Exception ignored) {
         }
     }

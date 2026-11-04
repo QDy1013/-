@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -27,6 +28,7 @@ import java.util.regex.Pattern;
  * 同一套时间解析口径。Python 端训练，这里只做推理。
  */
 public class Engine {
+    private static final String TIME_UNCERTAIN = "时间表达不清楚，建议核对原文";
 
     // ---------- 常量（与 Python 端一致）----------
     static final String[] LABELS = {"action", "notice", "discussion", "chatter"};
@@ -54,10 +56,11 @@ public class Engine {
     static final String[] EXAM_PREP = {"看完", "看一下", "看看", "复习好", "预习", "背完"};
     // 改时间：这些词 detectRevision 不认，要在撤销/更正分支之前单独处理
     static final String[] RESCHEDULE_WORDS = {"改到", "推迟到", "延期到", "提前到", "调整到", "挪到"};
+    static final Pattern P_EXAM_NEW_TIME = Pattern.compile("改到|推迟到|延期到|提前到|调整到|挪到|改为|改成|调整为");
     // 提问词：带这些就不当"改时间"，只当学生在问
     static final String[] ASK_WORDS = {"吗", "？", "?", "呢", "什么", "几点", "哪"};
     // "带/携带/自备"后面到下一个标点之间的内容，就是考试要带的东西
-    static final Pattern P_BRING = Pattern.compile("(?:携带|自备|带)\\s*([^，。；;！!\\n]*)");
+    static final Pattern P_BRING = Pattern.compile("(?:携带|自备|带)[ \\t]*[：:]?[ \\t]*([^，。；;！!\\r\\n]*)");
     static final int EXAM_TITLE_MAX = 24;
     static final String[] VAGUE = {"尽快", "近期", "这两天", "最近", "过几天", "有空", "随时",
             "抓紧", "尽早", "改天", "之后", "等通知", "另行通知"};
@@ -69,6 +72,7 @@ public class Engine {
             "注意", "记得", "务必", "一下", "那个", "这个", "消息"};
     static final long REVISION_WINDOW = 30 * 60_000L;   // 指代词只在原消息 30 分钟内有效
     static final int BURST_PROMOTE = 5;
+    static final long BURST_WINDOW_MS = 10 * 60_000L;
 
     static final Pattern P_CLOCK = Pattern.compile("(\\d{1,2})\\s*[:：]\\s*(\\d{2})");
     // 钟点支持中文数字：八点、十点半、两点、七点；分钟紧跟在钟点后，"半"=30 分
@@ -91,9 +95,13 @@ public class Engine {
     static final Pattern P_WEEKEND = Pattern.compile("(这|本|下)?\\s*周末");
     static final Pattern P_MONTHEND = Pattern.compile("(这|本|下)?\\s*个?\\s*月底");
     static final Pattern P_DAYONLY = Pattern.compile("(这个月|本月|当月)?\\s*(\\d{1,2})\\s*[日号]");
+    static final Pattern P_TITLE_TIME_WORDS = Pattern.compile(
+            "大后天|后天|明天|明日|明晚|明早|今天|今日|今晚|今早|当天|上午|早上|早晨|凌晨|中午|正午|下午|傍晚|晚上|晚间|夜里");
     static final Pattern P_ATALL = Pattern.compile("@\\s*所有人|@\\s*全体");
     static final Pattern P_SPLIT = Pattern.compile("[，。；;\\n！!？?]");
-    static final Pattern P_NUMLINE = Pattern.compile("(?m)^\\s*(\\d{1,3})\\s*[.、)]\\s*(.+?)\\s*$");
+    // 点号后紧跟一两位数字时按月日处理，例如“3.23 22:00 前报名”。
+    static final Pattern P_NUMLINE = Pattern.compile(
+            "(?m)^[ \\t]*(\\d{1,3})[ \\t]*(?:\\.(?!\\d{1,2}(?!\\d))|[、)])[ \\t]*(\\S[^\\r\\n]*)$");
     static final Pattern P_TITLE = Pattern.compile("[（(]([^）)]*)[）)]");
 
     // ---------- 数据 ----------
@@ -108,6 +116,8 @@ public class Engine {
 
     public static class Card {
         public String id, kind, title, channel, place, groupId, groupName, sender, sourceId, sourceText;
+        String titleOverride;
+        String lastRevisionText;
         public String bring;           // 考试卡专用：要带的东西（"带学生证和2B铅笔" → 学生证和2B铅笔）
         public String deadlineText = "待确认";
         public long deadline;          // 0 = 待确认
@@ -118,6 +128,14 @@ public class Engine {
         public String reason = "";
         public List<String> context = new ArrayList<>();
         public boolean done;
+
+        public String displayTitle() {
+            return titleOverride == null ? title : titleOverride;
+        }
+
+        public long calendarStart() {
+            return deadline == 0 || "exam".equals(kind) ? deadline : deadline - 3600_000L;
+        }
     }
 
     /**
@@ -194,8 +212,7 @@ public class Engine {
     final double[] intercept = new double[4];
     final List<Card> cards = new ArrayList<>();
     long seq;                                                // 已发出的最大卡片编号，单调递增
-    final Map<String, List<Long>> acks = new HashMap<>();
-    final List<Pending> candidates = new ArrayList<>();
+    final Map<String, List<Pending>> candidates = new HashMap<>();
     final Map<String, long[]> senderStat = new HashMap<>();   // group|sender -> {total, notify}
     final Map<String, List<String>> recent = new HashMap<>();
 
@@ -481,25 +498,23 @@ public class Engine {
         if (mc.find()) {
             hh = Integer.parseInt(mc.group(1));
             mm = Integer.parseInt(mc.group(2));
-            if (hh >= 0 && hh <= 23) {
-                hh = adjustHour(hh, periodBefore(t, mc.start()));
-                hasTime = true;
-            }
+            if (hh > 23 || mm > 59) return Deadline.none();
+            hh = adjustHour(hh, periodBefore(t, mc.start()));
+            hasTime = true;
         } else {
             Matcher mh = P_HOUR.matcher(t);
             if (mh.find()) {
                 int v = cn2int(mh.group(1));
-                if (v >= 0 && v <= 24) {
-                    hh = v % 24;
-                    if (mh.group(2) != null) {
-                        mm = 30;                        // "X点半"
-                    } else if (mh.group(3) != null) {
-                        int mv = cn2int(mh.group(3));   // "X点X分"
-                        if (mv >= 0 && mv <= 59) mm = mv;
-                    }
-                    hh = adjustHour(hh, periodBefore(t, mh.start()));
-                    hasTime = true;
+                if (v < 0 || v > 24) return Deadline.none();
+                hh = v % 24;
+                if (mh.group(2) != null) {
+                    mm = 30;
+                } else if (mh.group(3) != null) {
+                    mm = cn2int(mh.group(3));
+                    if (mm < 0 || mm > 59) return Deadline.none();
                 }
+                hh = adjustHour(hh, periodBefore(t, mh.start()));
+                hasTime = true;
             }
         }
 
@@ -652,17 +667,24 @@ public class Engine {
         return null;
     }
 
-    /** 考试卡标题：取含考试词的那一小句，去掉 @所有人 之类的开头，太长就截断。 */
+    /** 考试名称和时间分开显示，避免改期后标题仍留有原来的时刻。 */
     static String examTitle(String t, String hit) {
-        String best = null;
         for (String part : P_SPLIT.split(t)) {
             String s = part.trim();
-            if (!s.isEmpty() && s.contains(hit)) { best = s; break; }
+            int index = s.indexOf(hit);
+            if (index < 0) continue;
+            String subject = P_ATALL.matcher(s.substring(0, index)).replaceAll(" ");
+            for (Pattern pattern : new Pattern[]{P_ABS_CN, P_ABS_NUM, P_DAYONLY, P_WEEK, P_WEEKEND,
+                    P_MONTHEND, P_CLOCK, P_HOUR, P_TITLE_TIME_WORDS}) {
+                subject = pattern.matcher(subject).replaceAll(" ");
+            }
+            subject = subject.trim().replaceFirst("^(?:举行|进行|将于|定于|于)\\s*", "").trim();
+            if (subject.length() + hit.length() > EXAM_TITLE_MAX) {
+                subject = subject.substring(0, EXAM_TITLE_MAX - hit.length()).trim();
+            }
+            return subject + hit;
         }
-        if (best == null) best = hit;
-        best = best.replaceAll("^@\\s*(所有人|全体)\\s*", "").trim();
-        if (best.isEmpty()) best = hit;
-        return best.length() > EXAM_TITLE_MAX ? best.substring(0, EXAM_TITLE_MAX) : best;
+        return hit;
     }
 
     /** 要带的东西："带学生证和2B铅笔" → 学生证和2B铅笔；没有就 null。 */
@@ -789,29 +811,11 @@ public class Engine {
         double rel = relevance(t, m.groupName);
         String rev = detectRevision(t);
 
-        // ---------- 考试卡：改时间 ----------
-        // detectRevision 只认"改为/改成/更正"，"改到/推迟到/…"要在这之前单独处理。
-        // 只改同群已有的考试卡，不新建；提问、不可信、别的群说的，原卡不动也不出新卡。
+        // 考试变更先按考试名称定位，避免通用待办的关键词把同群另一场考试选中。
         String examWord = examHit(t);
-        if (examWord != null && containsAny(t, RESCHEDULE_WORDS)) {
-            String sender = m.sender == null ? "" : m.sender;
-            boolean ask = containsAny(t, ASK_WORDS);
-            boolean trusted = containsAny(sender, TEACHER_HINTS) || P_ATALL.matcher(t).find();
-            Card exam = latestExamCard(m.groupId);
-            boolean owner = exam != null && sender.equals(exam.sender);
-            if (!ask && exam != null && (trusted || owner)) {
-                Deadline nd = parseDeadline(t, m.ts);
-                if (nd.ok()) {
-                    exam.deadline = nd.value;
-                    exam.deadlineText = humanDeadline(nd.value);
-                    exam.needsConfirm = false;
-                    exam.updated = true;
-                    remember(m);
-                    notifyChanged();
-                    return;
-                }
-            }
-            // 学生问"改到…了吗"、不可信的人说、别的群、时间说不清：什么都不动
+        if (examWord != null && (containsAny(t, RESCHEDULE_WORDS)
+                || (rev != null && containsAny(t, EXAM_WORDS)))) {
+            applyExamRevision(m, t, examWord, rev);
             remember(m);
             return;
         }
@@ -831,6 +835,7 @@ public class Engine {
                     target.deadlineText = humanDeadline(d.value);
                     target.needsConfirm = false;
                     target.updated = true;
+                    target.lastRevisionText = t;
                     notifyChanged();
                     remember(m);
                     return;
@@ -925,7 +930,7 @@ public class Engine {
                 c.sourceText = t;
                 c.sourceTs = m.ts;
                 c.confidence = 0.85;
-                c.reason = c.needsConfirm ? "时间表达不清楚，建议核对原文" : "";
+                c.reason = c.needsConfirm ? TIME_UNCERTAIN : "";
                 c.context = new ArrayList<>(recent.getOrDefault(m.groupId, new ArrayList<>()));
                 cards.add(c);
                 remember(m);
@@ -939,8 +944,9 @@ public class Engine {
 
         if ("discussion".equals(label) || "chatter".equals(label)) {
             if (f.get("M:has_action") > 0 && f.get("M:has_time") > 0) {
-                Pending p = new Pending(m);
-                candidates.add(p);
+                List<Pending> group = candidates.computeIfAbsent(m.groupId, key -> new ArrayList<>());
+                group.removeIf(p -> m.ts - p.m.ts > BURST_WINDOW_MS);
+                group.add(new Pending(m));
             }
             remember(m);
             return;
@@ -976,7 +982,7 @@ public class Engine {
         c.sourceText = t;
         c.sourceTs = m.ts;
         c.confidence = 0.8;
-        c.reason = c.needsConfirm ? "时间表达不清楚，建议核对原文" : "";
+        c.reason = c.needsConfirm ? TIME_UNCERTAIN : "";
         c.context = new ArrayList<>(recent.getOrDefault(m.groupId, new ArrayList<>()));
         cards.add(c);
         remember(m);
@@ -994,14 +1000,51 @@ public class Engine {
         return null;
     }
 
-    /** 同群最新的一张考试卡；改时间只改它。 */
-    Card latestExamCard(String gid) {
-        if (gid == null) return null;
-        for (int i = cards.size() - 1; i >= 0; i--) {
-            Card c = cards.get(i);
-            if ("exam".equals(c.kind) && gid.equals(c.groupId)) return c;
+    /** 从考试词前取名称，略过通知开头的格式词。 */
+    private static String examReference(String text, String hit) {
+        String reference = hit;
+        for (String part : text.split("[，,。；;\\n！!？?：:]")) {
+            int index = part.indexOf(hit);
+            if (index < 0) continue;
+            String prefix = part.substring(0, index).trim().replaceFirst(
+                    "^(?:@\\s*(?:所有人|全体)\\s*|(?:关于|更正(?:一下)?|通知|提醒|取消|作废|撤销(?:该)?|撤回(?:该)?|忽略|原定的?|这场|那场)\\s*)+", "");
+            String name = stripSpaces(prefix + hit).toLowerCase(Locale.ROOT);
+            if (name.length() > reference.length()) reference = name;
         }
-        return null;
+        return reference;
+    }
+
+    private void applyExamRevision(Msg m, String text, String examWord, String revision) {
+        String trimmed = text.trim();
+        if (m.groupId == null || containsAny(text, ASK_WORDS)
+                || trimmed.startsWith("我") || trimmed.startsWith("俺") || trimmed.startsWith("咱")) return;
+        String reference = examReference(text, examWord);
+        Card target = null;
+        for (Card card : cards) {
+            if (!"exam".equals(card.kind) || !m.groupId.equals(card.groupId) || card.sourceText == null) continue;
+            if (!stripSpaces(card.sourceText).toLowerCase(Locale.ROOT).contains(reference)) continue;
+            if (target != null) return; // 同一群内仍有多个匹配的考试，等待明确通知。
+            target = card;
+        }
+        if (target == null) return;
+        String sender = m.sender == null ? "" : m.sender;
+        if (!containsAny(sender, TEACHER_HINTS) && !P_ATALL.matcher(text).find()
+                && (sender.isEmpty() || !sender.equals(target.sender))) return;
+        if ("revoke".equals(revision)) {
+            cards.remove(target);
+        } else {
+            Matcher change = P_EXAM_NEW_TIME.matcher(text);
+            int start = 0;
+            while (change.find()) start = change.end();
+            Deadline deadline = parseDeadline(text.substring(start), m.ts);
+            if (!deadline.ok()) return;
+            target.deadline = deadline.value;
+            target.deadlineText = humanDeadline(deadline.value);
+            target.needsConfirm = "low".equals(deadline.conf);
+            target.updated = true;
+            target.lastRevisionText = text;
+        }
+        notifyChanged();
     }
 
     /** 撤销/更正专用来词：出现在任何卡里都说明不了指向哪一条，匹配时排除。 */
@@ -1054,13 +1097,16 @@ public class Engine {
     }
 
     void trackAck(Msg m) {
-        acks.computeIfAbsent(m.groupId, k -> new ArrayList<>()).add(m.ts);
-        for (Pending p : candidates) {
-            if (p.carded) continue;
-            if (m.ts - p.m.ts > 10 * 60_000L) continue;
+        List<Pending> group = candidates.get(m.groupId);
+        if (group == null) return;
+        group.removeIf(p -> m.ts - p.m.ts > BURST_WINDOW_MS);
+        for (Pending p : group) {
+            if (m.ts <= p.m.ts) continue;
             p.burst++;
             if (p.burst >= BURST_PROMOTE) promote(p);
         }
+        group.removeIf(p -> p.carded);
+        if (group.isEmpty()) candidates.remove(m.groupId);
     }
 
     void promote(Pending p) {
@@ -1122,6 +1168,32 @@ public class Engine {
         return 0.4;
     }
 
+    /** 手动输入的群使用独立编号，避免改期或撤销碰到来自真实通知的同名群。 */
+    public boolean importText(String group, String sender, String body, long sentAt) {
+        String name = group.trim();
+        String text = body.trim();
+        if (name.isEmpty() || text.isEmpty() || sentAt <= 0) return false;
+        String who = sender.trim();
+        process(new Msg("manual-" + UUID.randomUUID(), "manual|" + name, name,
+                who.isEmpty() ? "手动粘贴" : who, text, "manual", sentAt));
+        return true;
+    }
+
+    /** null 保留当前时间，0 将时间标记为待确认。原始标题仍用于匹配群更正。 */
+    public boolean editCard(Card card, String title, Long deadline) {
+        String label = title.trim();
+        if (!cards.contains(card) || label.isEmpty() || (deadline != null && deadline < 0)) return false;
+        card.titleOverride = label.equals(card.title) ? null : label;
+        if (deadline != null) {
+            card.deadline = deadline;
+            card.deadlineText = humanDeadline(deadline);
+            card.needsConfirm = deadline == 0;
+            if (TIME_UNCERTAIN.equals(card.reason)) card.reason = "";
+        }
+        notifyChanged();
+        return true;
+    }
+
     public static String humanDeadline(long ts) {
         if (ts == 0) return "待确认";
         Calendar now = Calendar.getInstance();
@@ -1170,6 +1242,8 @@ public class Engine {
             w.write("sourceId\t" + esc(c.sourceId) + "\n");
             w.write("sourceText\t" + esc(c.sourceText) + "\n");
             w.write("deadlineText\t" + esc(c.deadlineText) + "\n");
+            if (c.titleOverride != null) w.write("titleOverride\t" + esc(c.titleOverride) + "\n");
+            if (c.lastRevisionText != null) w.write("lastRevisionText\t" + esc(c.lastRevisionText) + "\n");
             w.write("deadline\t" + c.deadline + "\n");
             w.write("sourceTs\t" + c.sourceTs + "\n");
             w.write("jielongKey\t" + esc(c.jielongKey) + "\n");
@@ -1221,6 +1295,8 @@ public class Engine {
             else if ("sourceId".equals(key)) cur.sourceId = unesc(val);
             else if ("sourceText".equals(key)) cur.sourceText = unesc(val);
             else if ("deadlineText".equals(key)) cur.deadlineText = unesc(val);
+            else if ("titleOverride".equals(key)) cur.titleOverride = unesc(val);
+            else if ("lastRevisionText".equals(key)) cur.lastRevisionText = unesc(val);
             else if ("deadline".equals(key)) cur.deadline = toLong(val, 0);
             else if ("sourceTs".equals(key)) cur.sourceTs = toLong(val, 0);
             else if ("jielongKey".equals(key)) cur.jielongKey = unesc(val);
@@ -1243,6 +1319,10 @@ public class Engine {
         for (Card c : loaded) {                  // 兜底：老数据里的编号也不能被撞
             long n = idNumber(c.id);
             if (n > seq) seq = n;
+            if ("exam".equals(c.kind)) {
+                String hit = examHit(c.sourceText);
+                if (hit != null) c.title = examTitle(c.sourceText, hit);
+            }
         }
     }
 
@@ -1315,7 +1395,46 @@ public class Engine {
     }
 
     public List<Card> ranked(int limit, long now) {
-        List<Card> out = new ArrayList<>(cards);      // 考试卡和其他卡一样保留，不在这里排除
+        return rankCards(new ArrayList<>(cards), limit, now);
+    }
+
+    public enum CardScope { ALL, OPEN, OVERDUE, COMPLETED }
+
+    public List<Card> queryCards(String keywords, CardScope scope, int limit, long now) {
+        List<Card> result = new ArrayList<>();
+        if (limit <= 0) return result;
+        String normalized = keywords == null ? "" : keywords.trim().toLowerCase(Locale.ROOT);
+        String[] terms = normalized.isEmpty() ? new String[0] : normalized.split("\\s+");
+        for (Card card : cards) {
+            if (matchesScope(card, scope, now) && matchesTerms(card, terms)) result.add(card);
+        }
+        return rankCards(result, limit, now);
+    }
+
+    private static boolean matchesScope(Card card, CardScope scope, long now) {
+        switch (scope) {
+            case OPEN: return !card.done;
+            case OVERDUE: return rankTier(card, now) == 3;
+            case COMPLETED: return card.done;
+            default: return true;
+        }
+    }
+
+    private static boolean matchesTerms(Card card, String[] terms) {
+        if (terms.length == 0) return true;
+        StringBuilder fields = new StringBuilder();
+        for (String value : new String[]{card.displayTitle(), card.title, card.groupName,
+                card.sender, card.channel, card.place}) {
+            if (value != null) fields.append(value).append('\n');
+        }
+        String searchable = fields.toString().toLowerCase(Locale.ROOT);
+        for (String term : terms) {
+            if (!searchable.contains(term)) return false;
+        }
+        return true;
+    }
+
+    private static List<Card> rankCards(List<Card> out, int limit, long now) {
         out.sort((a, b) -> {
             int ta = rankTier(a, now), tb = rankTier(b, now);
             if (ta != tb) return Integer.compare(ta, tb);
@@ -1334,6 +1453,15 @@ public class Engine {
             }
         });
         return out.size() > limit ? out.subList(0, limit) : out;
+    }
+
+    public void clearLocalData() {
+        cards.clear();
+        candidates.clear();
+        senderStat.clear();
+        recent.clear();
+        nIn = nNoise = nLevel3 = nPromoted = 0;
+        notifyChanged();
     }
 
     public List<Card> all() { return cards; }

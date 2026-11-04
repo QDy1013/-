@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const name = process.argv[2] || '';
-const PYTHON = 'D:/python.exe';
+const PYTHON = process.env.NOPALOU_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 const tail = s => s.trim().split(/\r?\n/).slice(-40).join('\n');
 
 function finish(r) {
@@ -28,7 +28,10 @@ if (/^test_[a-z0-9_]+$/.test(name)) {
   const out = mkdtempSync(path.join(tmpdir(), 'nopalou-test-'));
   const engine = path.join(root, 'android/app/src/com/nopalou/Engine.java');
   const filter = path.join(root, 'android/app/src/com/nopalou/NotifFilter.java');
-  const files = [engine, ...(existsSync(filter) ? [filter] : []), src];
+  const demo = path.join(root, 'android/app/src/com/nopalou/DemoScenario.java');
+  const preview = path.join(root, 'android/app/src/com/nopalou/ReadPreview.java');
+  const reminder = path.join(root, 'android/app/src/com/nopalou/ReminderPlan.java');
+  const files = [engine, ...[filter, demo, preview, reminder].filter(existsSync), src];
   const c = spawnSync('javac', ['-J-Duser.language=en', '-nowarn', '-encoding', 'UTF-8', '-d', out, ...files], { encoding: 'utf8', timeout: 120000 });
   if (c.status !== 0) finish(c);
   const args = ['-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8', '-cp', out, 'com.nopalou.' + name, path.join(root, 'android')];

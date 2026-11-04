@@ -42,8 +42,8 @@ public class NotifListener extends NotificationListenerService {
         // 通知标题放群名，正文放"发送者：内容"
         String sender = title.isEmpty() ? "群消息" : "群友";
         String body = text;
-        int cut = Math.max(text.indexOf('：'), text.indexOf(':'));
-        if (cut > 0 && cut <= 12) {
+        int cut = NotifFilter.senderSeparator(text);
+        if (cut >= 0) {
             sender = text.substring(0, cut);
             body = text.substring(cut + 1).trim();
         }

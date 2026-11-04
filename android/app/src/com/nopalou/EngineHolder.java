@@ -3,10 +3,11 @@ package com.nopalou;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.AtomicFile;
 import android.util.Log;
 
 import java.io.File;
-import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 
@@ -41,8 +42,8 @@ public class EngineHolder {
         if (app == null) app = ctx;
 
         Engine e;
-        try {
-            e = new Engine(app.getAssets().open("model.tsv"));
+        try (InputStream model = app.getAssets().open("model.tsv")) {
+            e = new Engine(model);
         } catch (Exception ex) {
             Log.w(TAG, "模型加载失败", ex);
             return null;
@@ -51,45 +52,35 @@ public class EngineHolder {
         // 档案必须先于任何消息进来之前装上，否则"跟我有关"的判断会用空档案。
         e.setProfile(ProfileStore.load(app));
 
-        File f = new File(app.getFilesDir(), FILE_NAME);
-        if (f.exists()) {
-            InputStream in = null;
-            try {
-                in = new FileInputStream(f);
-                e.loadState(in);
-            } catch (Exception ex) {
-                Log.w(TAG, "读取卡片失败", ex);
-            } finally {
-                if (in != null) try { in.close(); } catch (Exception ignored) { }
-            }
+        AtomicFile file = new AtomicFile(new File(app.getFilesDir(), FILE_NAME));
+        try (InputStream in = file.openRead()) {
+            e.loadState(in);
+        } catch (FileNotFoundException firstRun) {
+            // 首次启动还没有卡片存档。
+        } catch (Exception ex) {
+            Log.w(TAG, "读取卡片失败", ex);
         }
         engine = e;
         return engine;
     }
 
-    /** 先写 cards.dat.tmp 再改名，避免写一半被杀留下坏文件。异常一律吞掉不崩。 */
+    /** 写入成功后提交新存档，出错时由 AtomicFile 保留上一次存档。 */
     public static synchronized void save(Context ctx) {
         if (engine == null || ctx == null) return;
         Context app = ctx.getApplicationContext();
         if (app == null) app = ctx;
 
-        File dst = new File(app.getFilesDir(), FILE_NAME);
-        File tmp = new File(app.getFilesDir(), FILE_NAME + ".tmp");
+        AtomicFile file = new AtomicFile(new File(app.getFilesDir(), FILE_NAME));
         FileOutputStream out = null;
         try {
-            out = new FileOutputStream(tmp);
+            out = file.startWrite();
             engine.saveState(out);
-            out.flush();
-            out.close();
-            out = null;
-            if (!tmp.renameTo(dst)) {
-                if (dst.exists() && !dst.delete()) Log.w(TAG, "旧卡片文件删不掉");
-                if (!tmp.renameTo(dst)) Log.w(TAG, "卡片文件改名失败");
-            }
+            file.finishWrite(out);
         } catch (Exception ex) {
+            if (out != null) file.failWrite(out);
             Log.w(TAG, "保存卡片失败", ex);
-        } finally {
-            if (out != null) try { out.close(); } catch (Exception ignored) { }
+            return;
         }
+        ReminderReceiver.refresh(app, engine);
     }
 }

@@ -36,4 +36,19 @@ public final class NotifFilter {
         if (g.isEmpty()) return p;
         return p + "|" + g;
     }
+
+    static int senderSeparator(String text) {
+        int limit = Math.min(text.length() - 2, 12);
+        for (int i = 0; i <= limit; i++) {
+            char ch = text.charAt(i);
+            if (ch == '\n' || ch == '\r') break;
+            if (ch != '：' && ch != ':') continue;
+            // 发送者分隔符只会出现在首行，且两侧不能是钟点数字。
+            if (i == 0) return -1;
+            if (i + 2 < text.length() && Character.isDigit(text.charAt(i - 1))
+                    && Character.isDigit(text.charAt(i + 1)) && Character.isDigit(text.charAt(i + 2))) return -1;
+            return i;
+        }
+        return -1;
+    }
 }
