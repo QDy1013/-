@@ -27,7 +27,7 @@ nopalou/
     ├── build.py            Windows / Linux 通用构建入口（Android SDK + JDK）
     └── build/*.apk         产物
 
-(另有 docs/：审查意见、修复进度、考试卡规则、方案书对照、检查记录)
+(另有 docs/：审查意见、修复进度、考试卡规则、方案书对照、检查记录、演示与答辩要点)
 ```
 
 ## 怎么跑
