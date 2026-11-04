@@ -24,6 +24,12 @@ public class EngineHolder {
     /** 诊断日志在 SharedPreferences 里的键。 */
     static final String DIAG_KEY = "log";
 
+    /** 「最近一次自动收到」的时间在 diag 里的键，重启后要能读回来。 */
+    static final String KEY_LAST_AT = "last_at";
+
+    /** 「最近一次自动收到的群名」在 diag 里的键。 */
+    static final String KEY_LAST_GROUP = "last_group";
+
     /** 是否已经从磁盘恢复过诊断日志；只在进程内第一次 loadDiag 时恢复，避免反复覆盖内存里的新日志。 */
     private static boolean diagLoaded = false;
 
@@ -73,6 +79,9 @@ public class EngineHolder {
             SharedPreferences sp = app.getSharedPreferences(DIAG_PREFS, Context.MODE_PRIVATE);
             // 读出上次保存的文本；没有就是 null，DiagLog.load 会按空日志处理。
             DiagLog.load(sp.getString(DIAG_KEY, null));
+            // 顺便把「最近一次自动收到」的时间和群名读回来，重启后界面不用显示成空白。
+            lastReceivedAt = sp.getLong(KEY_LAST_AT, 0L);
+            lastReceivedGroup = sp.getString(KEY_LAST_GROUP, null);
         } catch (Throwable t) {
             // 读取或解析出错都吞掉，诊断日志缺失不影响主流程。
         }
@@ -86,6 +95,30 @@ public class EngineHolder {
 
     /** 最近一次自动收到消息所属的群名；还没收到过就是 null。 */
     public static volatile String lastReceivedGroup = null;
+
+    /**
+     * 把「最近一次自动收到」的时间和群名写进 diag 存档，重启后由 loadDiag 读回。
+     * 用 apply 异步提交，异常全吞：这份记录只影响界面显示，不能影响通知处理。
+     */
+    static void persistLast(Context ctx) {
+        try {
+            // 没有上下文就没法落盘，内存里的值保持不动。
+            if (ctx == null) return;
+            // 优先用 Application 上下文，避免持有 Activity 造成泄漏。
+            Context app = ctx.getApplicationContext();
+            // 拿不到 Application 就退回传进来的 ctx。
+            if (app == null) app = ctx;
+            // 和诊断日志共用同一个 diag 文件，只是键不同。
+            SharedPreferences sp = app.getSharedPreferences(DIAG_PREFS, Context.MODE_PRIVATE);
+            // 两个键一起写，避免时间和群名对不上；apply 异步提交，不阻塞通知线程。
+            sp.edit()
+                    .putLong(KEY_LAST_AT, lastReceivedAt)
+                    .putString(KEY_LAST_GROUP, lastReceivedGroup)
+                    .apply();
+        } catch (Throwable t) {
+            // 落盘失败、存储不可用等都直接忽略，绝不向外抛。
+        }
+    }
 
     /** 连接状态变了，让界面重画一次；引擎或界面还没准备好就跳过，不在这里加载模型。 */
     public static void refreshCards() {

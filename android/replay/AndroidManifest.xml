@@ -20,5 +20,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 命令触发入口：adb 发 com.nopalou.replay.FORMAT 广播即可在锁屏时发出格式测试通知。 -->
+        <receiver
+            android:name=".TriggerReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.nopalou.replay.FORMAT" />
+                <action android:name="com.nopalou.replay.SCHEDULE" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

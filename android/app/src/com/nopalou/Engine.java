@@ -95,6 +95,8 @@ public class Engine {
     static final Pattern P_WEEKEND = Pattern.compile("(这|本|下)?\\s*周末");
     static final Pattern P_MONTHEND = Pattern.compile("(这|本|下)?\\s*个?\\s*月底");
     static final Pattern P_DAYONLY = Pattern.compile("(这个月|本月|当月)?\\s*(\\d{1,2})\\s*[日号]");
+    // "中午前/中午之前"后面没有具体几点时，按当天 12:00 处理（"上午前"等不动）
+    static final Pattern P_NOON_BEFORE = Pattern.compile("中午\\s*(?:之前|前)");
     static final Pattern P_TITLE_TIME_WORDS = Pattern.compile(
             "大后天|后天|明天|明日|明晚|明早|今天|今日|今晚|今早|当天|上午|早上|早晨|凌晨|中午|正午|下午|傍晚|晚上|晚间|夜里");
     static final Pattern P_ATALL = Pattern.compile("@\\s*所有人|@\\s*全体");
@@ -103,6 +105,34 @@ public class Engine {
     static final Pattern P_NUMLINE = Pattern.compile(
             "(?m)^[ \\t]*(\\d{1,3})[ \\t]*(?:\\.(?!\\d{1,2}(?!\\d))|[、)])[ \\t]*(\\S[^\\r\\n]*)$");
     static final Pattern P_TITLE = Pattern.compile("[（(]([^）)]*)[）)]");
+
+    // ---- 标题清理用的公共正则（findAction 与 fallbackTitle 共用，与 Python clean_title 一致）----
+    // 时段词里补了单字"早""晚"，但它们必须紧跟数字 + 点/时才删，
+    // 所以整段写成「时段词? 数字 点/时」，不会误删"早自习"。
+    static final String TITLE_PERIOD =
+            "(?:凌晨|清晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|今晚|明晚|今早|明早|早|晚)?";
+    static final Pattern P_CLEAN_HOUR = Pattern.compile(
+            TITLE_PERIOD + "\\s*(\\d{1,2}|[一二三四五六七八九十]{1,3})\\s*[点时]\\s*"
+                    + "(?:半|\\d{0,2}\\s*分?)\\s*(?:之前|以前|前|截止)?");
+    static final Pattern P_CLEAN_CLOCK = Pattern.compile(
+            TITLE_PERIOD + "\\s*(\\d{1,2})\\s*[:：]\\s*(\\d{2})\\s*(?:之前|以前|前|截止)?");
+    // "本周内/这周内/下周"后面的"内"和"前/之前"一样整段删掉
+    static final Pattern P_CLEAN_WEEK = Pattern.compile(
+            "(下|本|这)(周|星期|礼拜)[一二三四五六日天]?\\s*(?:之前|以前|前|截止|内)?");
+    // "本月底/月底/月末/本月内/月内"（含可选"前/之前"）
+    static final Pattern P_CLEAN_MONTH = Pattern.compile(
+            "(?:这|本|下)?\\s*个?\\s*月\\s*(?:底|末|内)\\s*(?:之前|以前|前)?");
+    static final Pattern P_CLEAN_DAY = Pattern.compile(
+            "(?:今天|明天|后天|明晚|今晚|大后天|本周|这周|下周|周[一二三四五六日天]"
+                    + "|星期[一二三四五六日天]|\\d{1,2}\\s*[月.]\\s*\\d{1,2}\\s*[日号]?|月底|周末)\\s*"
+                    + "(?:凌晨|清晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)?\\s*(?:之前|以前|前|截止)?");
+    // 句首孤立的时段词（如"晚上交作业"）。单字"早/晚"不放进来，避免删掉"早自习"。
+    static final Pattern P_CLEAN_LEAD = Pattern.compile(
+            "^(?:凌晨|清晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)\\s*(?:之前|以前|前|截止)?");
+    static final Pattern P_CLEAN_PREFIX = Pattern.compile(
+            "^((?:请务必|请|大家|同学们|各位同学|各位|全体同学|全体|同学|记得|务必|注意|于)\\s*)+");
+    // 兜底标题取第一个标点子句（不含冒号，冒号前往往是"作业："这类前缀）
+    static final Pattern P_FALLBACK_SPLIT = Pattern.compile("[，。；！？,;!?]");
 
     // ---------- 数据 ----------
     public static class Msg {
@@ -493,29 +523,46 @@ public class Engine {
         for (String v : VAGUE) if (t.contains(v)) return Deadline.none();
 
         boolean hasTime = false;
+        boolean rollover = false;       // "24点/24:00" = 次日 0 点，日期要 +1 天
         int hh = -1, mm = 0;
         Matcher mc = P_CLOCK.matcher(t);
         if (mc.find()) {
             hh = Integer.parseInt(mc.group(1));
             mm = Integer.parseInt(mc.group(2));
-            if (hh > 23 || mm > 59) return Deadline.none();
-            hh = adjustHour(hh, periodBefore(t, mc.start()));
+            if (hh == 24 && mm == 0) {
+                hh = 0; mm = 0; rollover = true;
+            } else if (hh > 23 || mm > 59) {
+                return Deadline.none();
+            } else {
+                hh = adjustHour(hh, periodBefore(t, mc.start()));
+            }
             hasTime = true;
         } else {
             Matcher mh = P_HOUR.matcher(t);
             if (mh.find()) {
                 int v = cn2int(mh.group(1));
                 if (v < 0 || v > 24) return Deadline.none();
-                hh = v % 24;
                 if (mh.group(2) != null) {
                     mm = 30;
                 } else if (mh.group(3) != null) {
                     mm = cn2int(mh.group(3));
                     if (mm < 0 || mm > 59) return Deadline.none();
+                } else {
+                    mm = 0;
                 }
-                hh = adjustHour(hh, periodBefore(t, mh.start()));
+                if (v == 24) {
+                    if (mm != 0) return Deadline.none();
+                    hh = 0; mm = 0; rollover = true;
+                } else {
+                    hh = adjustHour(v, periodBefore(t, mh.start()));
+                }
                 hasTime = true;
             }
+        }
+
+        // "中午前/中午之前"没有具体钟点 → 当天 12:00
+        if (!hasTime && P_NOON_BEFORE.matcher(t).find()) {
+            hh = 12; mm = 0; hasTime = true;
         }
 
         long base = 0; boolean high = false;
@@ -607,12 +654,18 @@ public class Engine {
                 base = at(c, 0, 0);
             }
         }
+        // "24点"是当天结束/次日 0 点：日期整体后移一天
+        if (base != 0 && rollover) base = addDays(base, 1);
         if (base != 0 && !hasTime && t.contains("上课前")) {
             hh = 8; mm = 0; hasTime = true;
         }
         if (base == 0 && !hasTime) return Deadline.none();
 
         if (base == 0) {                    // 只有时刻
+            if (rollover) {
+                // "24点"只有时刻：直接按次日 0 点，不再做"已过就顺延"的判断
+                return new Deadline(at(sendCalendar(addDays(send, 1)), 0, 0), true, "medium");
+            }
             long cand = at(sendCalendar(send), hh, mm);
             if (cand <= send) cand = at(sendCalendar(addDays(send, 1)), hh, mm);
             return new Deadline(cand, true, "medium");
@@ -695,41 +748,62 @@ public class Engine {
         return s.isEmpty() ? null : s;
     }
 
+    /** 去掉子句里的时间表达、称呼前缀、渠道后缀，供 findAction / 兜底标题共用。 */
+    static String cleanTitle(String clause) {
+        String s = clause == null ? "" : clause;
+        // 时段词 + 钟点（含"半"）+ 可选后缀"之前/以前/前/截止"，整段一起删
+        s = P_CLEAN_HOUR.matcher(s).replaceAll("");
+        // hh:mm 前面同样可能带时段词，后面同样可能带"之前/前/截止"
+        s = P_CLEAN_CLOCK.matcher(s).replaceAll("");
+        s = P_CLEAN_WEEK.matcher(s).replaceAll("");
+        s = P_CLEAN_MONTH.matcher(s).replaceAll("");
+        s = P_CLEAN_DAY.matcher(s).replaceAll("");
+        s = P_CLEAN_LEAD.matcher(s).replaceAll("");
+        s = s.replaceAll("(上课前|放学前|上课之前)", "");
+        s = s.replaceAll("^[一二三四五六日天下本周这\\s]+", "");
+        // 去掉渠道后缀
+        s = s.replaceAll("(交|提交|上传|发)到[^，。；、]{0,12}", "");
+        s = s.replaceAll("[，,]?\\s*(学习通|雨课堂|课程网站|QQ 群文件|邮箱|教务系统|课代表处|微信转账)[^，。；]{0,6}", "");
+        s = P_CLEAN_PREFIX.matcher(s).replaceAll("");
+        s = s.replaceAll("(啊|哈|呀|哦|啦|吧|喔|哟)+$", "");
+        s = s.replaceAll("[，,、]+$", "");
+        return s.trim();
+    }
+
+    /**
+     * 返回 {事项短语, 命中的行动词}。
+     * 按标点切子句，挑第一个含行动词且不像闲聊的子句，用 cleanTitle 去掉
+     * 时间表达、称呼前缀和渠道后缀。清理后太短时，退到第一个非空子句
+     * （它通常是"作业：…习题"这种事项名，时间在后面的子句里）。
+     */
     static String[] findAction(String text) {
+        if (text == null) return new String[]{null, null};
+        List<String> clauses = new ArrayList<>();
+        for (String c : P_SPLIT.split(text)) {
+            c = c.trim();
+            if (!c.isEmpty()) clauses.add(c);
+        }
         String best = null, verb = null;
-        for (String clause : P_SPLIT.split(text)) {
-            clause = clause.trim();
-            if (clause.isEmpty()) continue;
-            if (clause.startsWith("我") || clause.startsWith("俺") || clause.startsWith("咱们")) continue;
+        int bestI = -1;
+        for (int i = 0; i < clauses.size(); i++) {
+            String clause = clauses.get(i);
+            // 排除"我明天交"这类第一人称陈述（是讨论，不是给你的通知）
+            if (clause.startsWith("我") || clause.startsWith("俺") || clause.startsWith("咱")) continue;
             String v = null;
             for (String vb : VERBS) if (clause.contains(vb)) { v = vb; break; }
             if (v == null) continue;
-            best = clause; verb = v;
+            best = clause; bestI = i; verb = v;
             break;
         }
         if (best == null) return new String[]{null, null};
-        String s = best;
-        // 时段词 + 钟点（含"半"）+ 可选后缀"之前/以前/前/截止"，整段一起删，避免残留"上午""前"这类字
-        s = s.replaceAll("(?:凌晨|清晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)?\\s*"
-                + "(\\d{1,2}|[一二三四五六七八九十]{1,3})\\s*[点时]\\s*(?:半|\\d{0,2}\\s*分?)\\s*"
-                + "(?:之前|以前|前|截止)?", "");
-        // hh:mm 前面同样可能带时段词，后面同样可能带"之前/前/截止"
-        s = s.replaceAll("(?:凌晨|清晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)?\\s*"
-                + "\\d{1,2}\\s*[:：]\\s*\\d{2}\\s*(?:之前|以前|前|截止)?", "");
-        s = s.replaceAll("(下|本|这)(周|星期|礼拜)[一二三四五六日天]?\\s*(?:之前|以前|前|截止)?", "");
-        s = s.replaceAll("(?:今天|明天|后天|明晚|今晚|大后天|本周|这周|下周|周[一二三四五六日天]|星期[一二三四五六日天]"
-                + "|\\d{1,2}\\s*[月.]\\s*\\d{1,2}\\s*[日号]?|月底|周末)\\s*"
-                + "(?:凌晨|清晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)?\\s*(?:之前|以前|前|截止)?", "");
-        // 开头孤立的时段词（如"晚上交作业"），只在句首处理，避免误删正文里的词
-        s = s.replaceAll("^(?:凌晨|清晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)\\s*(?:之前|以前|前|截止)?", "");
-        s = s.replaceAll("(上课前|放学前|上课之前)", "");
-        s = s.replaceAll("^[一二三四五六日天下本周这\\s]+", "");
-        s = s.replaceAll("(交|提交|上传|发)到[^，。；、]{0,12}", "");
-        s = s.replaceAll("[，,]?\\s*(学习通|雨课堂|课程网站|QQ 群文件|邮箱|教务系统|课代表处|微信转账)[^，。；]{0,6}", "");
-        s = s.replaceAll("^((?:请务必|请|大家|同学们|各位|记得|务必|注意)\\s*)+", "");
-        s = s.replaceAll("(啊|哈|呀|哦|啦|吧|喔|哟)+$", "");
-        s = s.replaceAll("[，,、]+$", "").trim();
-        if (s.length() < 2) return new String[]{best, verb};
+        String s = cleanTitle(best);
+        if (s.length() < 3) {
+            // 前一个子句（第一个非空子句，且不是被选中的那个）同样清理后当标题
+            String prev = bestI > 0 ? cleanTitle(clauses.get(0)) : "";
+            if (!prev.isEmpty()) return new String[]{prev, verb};
+            // 没有可用前句：沿用旧办法（<2 才退回子句原文）
+            if (s.length() < 2) return new String[]{best, verb};
+        }
         return new String[]{s, verb};
     }
 
@@ -1151,8 +1225,18 @@ public class Engine {
     }
 
     static String fallbackTitle(String t) {
-        String s = t.trim().split("\\n")[0];
-        return s.length() > 18 ? s.substring(0, 18) + "…" : s;
+        // 先取第一个标点子句，做与 findAction 相同的时间/称呼清理；太短再退回旧办法
+        if (t == null) return null;
+        String trimmed = t.trim();
+        String first = trimmed.isEmpty() ? "" : trimmed.split("\\r\\n|\\r|\\n")[0];
+        String clause = "";
+        for (String c : P_FALLBACK_SPLIT.split(first)) {
+            c = c.trim();
+            if (!c.isEmpty()) { clause = c; break; }
+        }
+        String cleaned = clause.isEmpty() ? "" : cleanTitle(clause);
+        String title = cleaned.length() >= 2 ? cleaned : first;
+        return title.length() > 18 ? title.substring(0, 18) + "…" : title;
     }
 
     void remember(Msg m) {

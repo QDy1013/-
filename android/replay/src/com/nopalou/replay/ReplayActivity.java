@@ -204,51 +204,14 @@ public class ReplayActivity extends Activity {
     /**
      * 格式测试：一次性发出 5 条不同「形状」的通知，覆盖微信/QQ 在真机上常见的几种样式，
      * 用来验证主 App 的解析。编号从 9000 起，避开回放用的 1..N，彼此也不互相覆盖。
+     *
+     * 具体发通知的代码已搬到 FormatNotifs，adb 广播触发时也走同一份，两处效果完全一致。
      */
     @SuppressWarnings("deprecation")
     void formatTest() {
-        long now = System.currentTimeMillis();
-
-        // A：多条消息会话（MessagingStyle 群聊），每条消息带发送者和独立时间。
-        Notification.MessagingStyle ms = new Notification.MessagingStyle("我");
-        if (Build.VERSION.SDK_INT >= 28) {
-            // 会话标题和「这是群聊」的标记只在 API 28+ 生效，低版本跳过。
-            ms.setConversationTitle("格式测试群");
-            ms.setGroupConversation(true);
-        }
-        ms.addMessage("明天20:00前交实验报告", now - 3000, "王老师")
-                .addMessage("周五18:00前报名体测", now - 2000, "班长")
-                .addMessage("收到", now - 1000, "周同学");
-        Notification.Builder a = fmtBuilder(now);
-        a.setStyle(ms)
-                .setContentTitle("格式测试群")
-                .setContentText("周同学: 收到");
-        nm.notify(9000, a.build());
-
-        // B：微信折叠群的形状，正文里直接带「[3条]发送者：内容」。
-        Notification.Builder b = fmtBuilder(now);
-        b.setContentTitle("折叠测试群")
-                .setContentText("[3条]王老师：下周三下午3点期中考试，教二305");
-        nm.notify(9001, b.build());
-
-        // C：只给条数、不给内容（QQ 的「N条新消息」）。
-        Notification.Builder c = fmtBuilder(now);
-        c.setContentTitle("计数测试群")
-                .setContentText("3条新消息");
-        nm.notify(9002, c.build());
-
-        // D：图片消息占位，正文只有「发送者：[图片]」。
-        Notification.Builder d = fmtBuilder(now);
-        d.setContentTitle("图片测试群")
-                .setContentText("班长：[图片]");
-        nm.notify(9003, d.build());
-
-        // E：私聊形状，正文没有「发送者：」前缀。
-        Notification.Builder e = fmtBuilder(now);
-        e.setContentTitle("私聊测试")
-                .setContentText("明天上午9点交作业，别忘了");
-        nm.notify(9004, e.build());
-
+        // 交给共用的发送逻辑，通知编号和内容都在那边。
+        FormatNotifs.post(this);
+        // 界面上的按钮仍保留提示，广播触发时不会弹。
         Toast.makeText(this, "已发出 5 条格式测试通知", Toast.LENGTH_SHORT).show();
     }
 

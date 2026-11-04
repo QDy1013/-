@@ -44,6 +44,8 @@ RE_ABS_NUM = re.compile(
 RE_WEEK = re.compile(r"(下下|下|本|这|上)?\s*(?:周|星期|礼拜)\s*(?:周|星期|礼拜)?\s*([一二三四五六日天七])")
 RE_WEEKEND = re.compile(r"(这|本|下)?\s*周末")
 RE_MONTH_END = re.compile(r"(这|本|下)?\s*个?\s*月底")
+# "中午前/中午之前"后面没有具体几点时，按当天 12:00 处理（"上午前"等不动）
+RE_NOON_BEFORE = re.compile(r"中午\s*(?:之前|前)")
 RE_DAY_ONLY = re.compile(r"(这个月|本月|当月)?\s*(\d{1,2})\s*[日号]")
 
 DEFAULT_CLASS_HOUR = 8  # "上课前"且没给具体时刻时，按早八算
@@ -145,6 +147,7 @@ def parse_deadline(text: str, send: datetime) -> TimeParse:
     # 2) 抓时刻：先定位钟点，再只取钟点之前的时段词（避免"晚了不收"抢走"明早"）
     hh = mm = None
     has_time = False
+    rollover = False          # "24点/24:00" = 次日 0 点，日期要 +1 天
     colon = re.search(r"(\d{1,2})\s*:\s*(\d{2})", t)
     mh = RE_HOUR.search(t)
     clock = colon or mh
@@ -152,24 +155,37 @@ def parse_deadline(text: str, send: datetime) -> TimeParse:
 
     if colon:
         hh, mm = int(colon.group(1)), int(colon.group(2))
-        if hh > 23 or mm > 59:
+        if hh == 24 and mm == 0:
+            hh, mm, rollover = 0, 0, True
+        elif hh > 23 or mm > 59:
             return TimeParse(None, False, "none", note="非法时刻")
-        hh = _period_adjust(hh, period)
+        else:
+            hh = _period_adjust(hh, period)
         has_time = True
     elif mh:
         v = _cn2int(mh.group(1))
         if v is None or not 0 <= v <= 24:
             return TimeParse(None, False, "none", note="非法时刻")
-        hh = v % 24
-        mm = 0
         if mh.group(2):
-            mm = 30
+            mins = 30
         elif mh.group(3):
-            mm = _cn2int(mh.group(3))
-        if mm is None or not 0 <= mm <= 59:
+            mins = _cn2int(mh.group(3))
+        else:
+            mins = 0
+        if mins is None or not 0 <= mins <= 59:
             return TimeParse(None, False, "none", note="非法时刻")
-        hh = _period_adjust(hh, period)
+        if v == 24:
+            if mins != 0:
+                return TimeParse(None, False, "none", note="非法时刻")
+            hh, mm, rollover = 0, 0, True
+        else:
+            hh, mm = v, mins
+            hh = _period_adjust(hh, period)
         has_time = True
+
+    # 2.5) "中午前/中午之前"没有具体钟点 → 当天 12:00
+    if not has_time and RE_NOON_BEFORE.search(t):
+        hh, mm, has_time = 12, 0, True
 
     # 3) 抓日期：绝对日期 > 相对日 > 星期 > 模糊锚点
     base: date | None = None
@@ -258,6 +274,10 @@ def parse_deadline(text: str, send: datetime) -> TimeParse:
             date_conf = "medium"
             note = "月底"
 
+    # "24点"是当天结束/次日 0 点：日期整体后移一天
+    if base is not None and rollover:
+        base += timedelta(days=1)
+
     # 4) "上课前"且无时刻 → 早八
     if base is not None and not has_time and "上课前" in t:
         hh, mm, has_time = DEFAULT_CLASS_HOUR, 0, True
@@ -267,6 +287,10 @@ def parse_deadline(text: str, send: datetime) -> TimeParse:
         return TimeParse(None, False, "none", note="无时间表达")
 
     if base is None:
+        if rollover:
+            # "24点"只有时刻：直接按次日 0 点，不再做"已过就顺延"的判断
+            return TimeParse(datetime.combine(send.date() + timedelta(days=1), time(0, 0)),
+                             True, "medium", note="24点按次日0点")
         # 只有时刻没有日期：今天该时刻未过就是今天，否则明天（置信度 medium）
         cand = datetime.combine(send.date(), time(hh, mm))
         if cand <= send:

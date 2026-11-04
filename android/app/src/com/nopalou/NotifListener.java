@@ -191,6 +191,8 @@ public class NotifListener extends NotificationListenerService {
             EngineHolder.lastReceivedAt = System.currentTimeMillis();
             // 记录这条通知的群名。
             EngineHolder.lastReceivedGroup = group;
+            // 立刻把这两个值落盘，App 被系统杀掉重启后界面仍能显示"最近一次自动收到"。
+            EngineHolder.persistLast(this);
             // 一次通知只存一次盘，不按消息条数重复写。
             EngineHolder.save(this);
 

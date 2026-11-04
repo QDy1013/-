@@ -19,9 +19,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import jielong as jl
-from .extract import Extracted, extract, human_deadline
+from .extract import Extracted, clean_title, extract, human_deadline
 from .features import MANUAL_KEYS, Stats, is_noise, vectorize
 from .timeparse import parse_deadline
+
+# 兜底标题取第一个标点子句（不含冒号，冒号前往往是"作业："这类前缀）
+RE_FALLBACK_SPLIT = re.compile(r"[，。；！？,;!?]")
 
 REVISE_WORDS = ("更正", "改为", "改成", "调整为", "不作数", "说错了", "重新发一下")
 REVOKE_WORDS = ("作废", "取消", "忽略", "发错", "算了不", "撤销该", "撤回该")
@@ -525,8 +528,12 @@ class Pipeline:
 
     @staticmethod
     def _fallback_title(text: str) -> str:
-        t = text.strip().splitlines()[0]
-        return (t[:18] + "…") if len(t) > 18 else t
+        # 先取第一个标点子句，做与 find_action 相同的时间/称呼清理；太短再退回旧办法
+        first = text.strip().splitlines()[0] if text.strip() else ""
+        clause = next((c.strip() for c in RE_FALLBACK_SPLIT.split(first) if c.strip()), "")
+        cleaned = clean_title(clause) if clause else ""
+        title = cleaned if len(cleaned) >= 2 else first
+        return (title[:18] + "…") if len(title) > 18 else title
 
     def _latest_card(self, group_id: str) -> Card | None:
         for c in reversed(self.cards):
