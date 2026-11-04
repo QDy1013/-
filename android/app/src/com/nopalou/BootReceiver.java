@@ -25,6 +25,12 @@ public class BootReceiver extends BroadcastReceiver {
         } catch (Exception ignored) {
         }
 
+        // 顺便登记看门狗：只在还没有这个任务时才会真正登记，不会重置已有周期。
+        try {
+            WatchdogJob.schedule(context);
+        } catch (Exception ignored) {
+        }
+
         try {
             ReminderReceiver.refresh(context, EngineHolder.get(context));
         } catch (Exception ignored) {

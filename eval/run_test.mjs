@@ -34,7 +34,9 @@ if (/^test_[a-z0-9_]+$/.test(name)) {
   const today = path.join(root, 'android/app/src/com/nopalou/TodayView.java');
   const clash = path.join(root, 'android/app/src/com/nopalou/ClashPlan.java');
   const parser = path.join(root, 'android/app/src/com/nopalou/NotifParser.java');
-  const files = [engine, ...[filter, demo, preview, reminder, today, clash, parser].filter(existsSync), src];
+  const diag = path.join(root, 'android/app/src/com/nopalou/DiagLog.java');
+  const health = path.join(root, 'android/app/src/com/nopalou/HealthCheck.java');
+  const files = [engine, ...[filter, demo, preview, reminder, today, clash, parser, diag, health].filter(existsSync), src];
   const c = spawnSync('javac', ['-J-Duser.language=en', '-nowarn', '-encoding', 'UTF-8', '-d', out, ...files], { encoding: 'utf8', timeout: 120000 });
   if (c.status !== 0) finish(c);
   const args = ['-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8', '-cp', out, 'com.nopalou.' + name, path.join(root, 'android')];
