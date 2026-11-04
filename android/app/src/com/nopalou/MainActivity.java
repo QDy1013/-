@@ -36,6 +36,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
 import java.util.function.LongConsumer;
@@ -204,24 +205,10 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         bar.addView(demoUpdate);
         liveTools = new LinearLayout(this);
         liveTools.setOrientation(LinearLayout.HORIZONTAL);
+        // 最常用的两个入口保留在工具栏最前面，其余入口收进「更多」下拉菜单。
         liveTools.addView(button("粘贴群消息", v -> showMessageImport()));
-        liveTools.addView(button("到期提醒", v -> showDeadlineReminderSettings()));
-        liveTools.addView(button("我的档案", v -> startActivity(
-                new Intent(this, ProfileActivity.class))));
-        liveTools.addView(button("通知读取权限", v -> startActivity(new Intent(
-                "android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))));
         liveTools.addView(button("读当前群", v -> readCurrentScreen()));
-        liveTools.addView(button("通知回放", v -> startReplay()));
-        liveTools.addView(button("清空", v -> new AlertDialog.Builder(this)
-                .setTitle("清空待办和近期消息？")
-                .setMessage("会移除本机的全部卡片，以及这次运行中用于识别的近期消息。")
-                .setPositiveButton("清空", (dialog, which) -> {
-                    if (ReadService.instance != null) ReadService.instance.cancelPendingPreview();
-                    engine.clearLocalData();
-                    EngineHolder.save(this);
-                })
-                .setNegativeButton("取消", null)
-                .show()));
+        liveTools.addView(button("更多", v -> showMoreMenu()));
         bar.addView(liveTools);
         hs.addView(bar);
         root.addView(hs);
@@ -344,6 +331,53 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         }
     }
 
+    /**
+     * 「更多」菜单：把原来挤在工具栏上的次级入口收进一个下拉列表。
+     * 每一项做的事和原按钮的点击回调完全一致，只是换了入口。
+     */
+    void showMoreMenu() {
+        new AlertDialog.Builder(this)
+                .setItems(new String[]{"到期提醒", "我的档案", "通知读取权限", "通知回放", "清空本机数据"},
+                        (d, which) -> {
+                            switch (which) {
+                                case 0:
+                                    // 到期提醒设置
+                                    showDeadlineReminderSettings();
+                                    break;
+                                case 1:
+                                    // 我的档案
+                                    startActivity(new Intent(this, ProfileActivity.class));
+                                    break;
+                                case 2:
+                                    // 通知读取权限：跳到系统的通知使用权页面
+                                    startActivity(new Intent(
+                                            "android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"));
+                                    break;
+                                case 3:
+                                    // 通知回放
+                                    startReplay();
+                                    break;
+                                case 4:
+                                    // 清空本机数据：确认后清掉全部卡片和近期消息，并落盘
+                                    new AlertDialog.Builder(this)
+                                            .setTitle("清空待办和近期消息？")
+                                            .setMessage("会移除本机的全部卡片，以及这次运行中用于识别的近期消息。")
+                                            .setPositiveButton("清空", (dialog, w) -> {
+                                                if (ReadService.instance != null)
+                                                    ReadService.instance.cancelPendingPreview();
+                                                engine.clearLocalData();
+                                                EngineHolder.save(this);
+                                            })
+                                            .setNegativeButton("取消", null)
+                                            .show();
+                                    break;
+                                default:
+                                    break;
+                            }
+                        })
+                .show();
+    }
+
     void readCurrentScreen() {
         if (ReadService.instance == null) {
             Toast.makeText(this, "还没开无障碍权限", Toast.LENGTH_LONG).show();
@@ -367,9 +401,18 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         if (cardList == null) return;
         cardList.removeAllViews();
         Engine shown = demo == null ? engine : demo.engine;
-        stats.setText("处理 " + shown.nIn + " 条 · 丢弃噪声 " + shown.nNoise
-                + " · 进模型 " + shown.nLevel3 + " · 待办 " + shown.all().size()
-                + (shown.nPromoted > 0 ? (" · 回复潮提升 " + shown.nPromoted) : ""));
+        // 顶部改成用户看得懂的一句话：今天几件、明天几件、有多少过期和待确认。
+        // 颜色沿用原来的绿色，不改外观基调。
+        stats.setText(TodayView.summary(shown.all(), System.currentTimeMillis()));
+        // 开发者统计整句不删，改为长按顶部统计句时用 Toast 展示（演示模式下同样适用）。
+        stats.setOnLongClickListener(v -> {
+            // 原文拼接逻辑原样保留，只是从常显改成按需查看。
+            Toast.makeText(MainActivity.this, "处理 " + shown.nIn + " 条 · 丢弃噪声 " + shown.nNoise
+                    + " · 进模型 " + shown.nLevel3 + " · 待办 " + shown.all().size()
+                    + (shown.nPromoted > 0 ? (" · 回复潮提升 " + shown.nPromoted) : ""),
+                    Toast.LENGTH_LONG).show();
+            return true;
+        });
         if (demo == null) {
             updateNotifStatus();
         } else {
@@ -386,13 +429,31 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             } else if (!keywords.trim().isEmpty() || scope != Engine.CardScope.ALL) {
                 empty.setText("没有符合当前搜索或筛选的卡片。");
             } else {
-                empty.setText("可以先体验「离线演示」，也可以直接粘贴一条群消息。\n要自动处理消息，请填写档案并开启通知读取。");
+                // 空状态改成更温暖的引导：告诉用户下一步点哪里，而不是只描述"没有卡片"。
+                empty.setText("这里还没有待办。\n点「读当前群」或「粘贴群消息」，把群里的事变成清单。");
             }
             cardList.addView(empty);
             return;
         }
         int displayed = Math.min(visibleLimit, list.size());
-        for (int i = 0; i < displayed; i++) cardList.addView(cardView(list.get(i)));
+        // 今日视图：先取前 displayed 张卡，再按 TodayView.ORDER 的固定分组顺序展示。
+        long now = System.currentTimeMillis();
+        List<Engine.Card> visible = new ArrayList<>(list.subList(0, displayed));
+        for (int g = 0; g < TodayView.ORDER.length; g++) {
+            String groupName = TodayView.ORDER[g];
+            // 先按原顺序收集这一组的卡，保证组内顺序和引擎排序一致。
+            List<Engine.Card> group = new ArrayList<>();
+            for (int i = 0; i < visible.size(); i++) {
+                Engine.Card c = visible.get(i);
+                if (groupName.equals(TodayView.bucket(c.deadline, c.needsConfirm, c.done, now))) {
+                    group.add(c);
+                }
+            }
+            // 这一组没卡就不出标题，避免出现空分组。
+            if (group.isEmpty()) continue;
+            cardList.addView(groupHeader(groupName, group.size()));
+            for (int i = 0; i < group.size(); i++) cardList.addView(cardView(group.get(i)));
+        }
         if (list.size() > displayed) {
             cardList.addView(button("显示更多", v -> {
                 int y = listScroll.getScrollY();
@@ -401,6 +462,17 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 listScroll.post(() -> listScroll.scrollTo(0, y));
             }));
         }
+    }
+
+    /** 分组标题：形如「今天 · 2」，弱化样式，只做视觉分隔。 */
+    TextView groupHeader(String name, int count) {
+        TextView h = new TextView(this);
+        h.setText(name + " · " + count);
+        h.setTextColor(Color.parseColor("#7C8598"));
+        h.setTextSize(12);
+        h.setTypeface(null, 1);
+        h.setPadding(0, dp(this, 6), 0, dp(this, 6));
+        return h;
     }
 
     View cardView(Engine.Card c) {
@@ -432,14 +504,28 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         LinearLayout heading = new LinearLayout(this);
         heading.setGravity(Gravity.CENTER_VERTICAL);
         heading.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        // 一键完成：不用再点开卡片弹窗，标题行直接给出「完成 / 恢复」。
+        Button done = button(c.done ? "恢复" : "完成", v -> toggleDone(c));
+        done.setContentDescription((c.done ? "恢复卡片：" : "完成卡片：") + title);
+        heading.addView(done);
         Button edit = button("修正", v -> showCardEdit(c));
         edit.setContentDescription("修正卡片：" + title);
         heading.addView(edit);
         box.addView(heading);
 
         TextView meta = new TextView(this);
-        String when = c.deadline == 0 ? "截止：待确认" :
-                ((isExam ? "时间：" : "截止：") + Engine.humanDeadline(c.deadline));
+        // 时间行改成"还剩多久 + 具体时刻"：先给结论，括号里保留原来的自然语言时间。
+        // 待确认的卡完全没有时间，仍沿用原来的"截止：待确认"。
+        long now = System.currentTimeMillis();
+        String when;
+        if (c.deadline == 0) {
+            when = "截止：待确认";
+        } else {
+            // 考试卡把"时间："放在最前，普通卡不再带"截止："前缀，读起来更直接。
+            when = (isExam ? "时间：" : "")
+                    + TodayView.countdown(c.deadline, now)
+                    + "（" + Engine.humanDeadline(c.deadline) + "）";
+        }
         // 考试卡优先显示地点（考场），其他卡仍沿用原来的渠道优先
         String where;
         if (isExam) {
@@ -448,7 +534,21 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             where = c.channel != null ? (" · " + c.channel) : (c.place != null ? (" · " + c.place) : "");
         }
         meta.setText(when + where);
-        meta.setTextColor(Color.parseColor(c.deadline == 0 ? "#E0B458" : "#5FD3A6"));
+        // 颜色按紧急程度分档：普通绿、一天内黄、三小时内橙、已过期暗红；待确认仍是黄色。
+        int level = TodayView.urgency(c.deadline, c.needsConfirm, c.done, now);
+        String metaColor;
+        if (c.needsConfirm || c.deadline == 0) {
+            metaColor = "#E0B458";   // 待确认：沿用原来的黄色
+        } else if (level == 3) {
+            metaColor = "#B0675F";   // 已过期
+        } else if (level == 2) {
+            metaColor = "#FF7A59";   // 三小时内
+        } else if (level == 1) {
+            metaColor = "#E0B458";   // 一天内
+        } else {
+            metaColor = "#5FD3A6";   // 普通
+        }
+        meta.setTextColor(Color.parseColor(metaColor));
         meta.setTextSize(13);
         meta.setPadding(0, dp(this, 6), 0, 0);
         box.addView(meta);
@@ -505,16 +605,22 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                     if (demo == null) EngineHolder.save(this);
                 })
                 // 第三按钮在"已完成 / 恢复"间切换：标记后重绘并落盘（排序交给引擎）。
-                .setNegativeButton(c.done ? "恢复" : "已完成", (d, w) -> {
-                    if (c.done) {
-                        c.done = false;   // 恢复成待办
-                    } else {
-                        c.done = true;    // 标记已完成
-                    }
-                    render();
-                    if (demo == null) EngineHolder.save(this);
-                })
+                .setNegativeButton(c.done ? "恢复" : "已完成", (d, w) -> toggleDone(c))
                 .show();
+    }
+
+    /**
+     * 标记完成 / 恢复成待办。
+     * 从原弹窗按钮回调原样抽出：只翻转 c.done，然后重绘；非演示模式下落盘。
+     */
+    void toggleDone(Engine.Card c) {
+        if (c.done) {
+            c.done = false;   // 恢复成待办
+        } else {
+            c.done = true;    // 标记已完成
+        }
+        render();
+        if (demo == null) EngineHolder.save(this);
     }
 
     void showMessageImport() {
