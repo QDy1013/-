@@ -52,6 +52,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     Engine engine;
     LinearLayout cardList;
     TextView stats;
+    /** 撞车提醒横幅：几天内几件事挤在一起时显示在统计句下方。 */
+    TextView clashBanner;
     TextView notifStatus;
     TextView empty;
     boolean accessChecked;
@@ -180,6 +182,26 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         stats.setTextSize(11);
         stats.setPadding(0, dp(this, 8), 0, dp(this, 10));
         root.addView(stats);
+
+        // 撞车提醒横幅：紧跟统计句、在通知状态之前，样式与卡片区分但同属暖色系。
+        clashBanner = new TextView(this);
+        clashBanner.setTextSize(12);
+        clashBanner.setTextColor(Color.parseColor("#FF9F7A"));
+        clashBanner.setPadding(dp(this, 12), dp(this, 8), dp(this, 12), dp(this, 8));
+        GradientDrawable bannerBg = new GradientDrawable();
+        bannerBg.setColor(Color.parseColor("#2A1A14"));
+        bannerBg.setCornerRadius(dp(this, 10));
+        bannerBg.setStroke(dp(this, 1), Color.parseColor("#5A3524"));
+        clashBanner.setBackground(bannerBg);
+        LinearLayout.LayoutParams bannerLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bannerLp.bottomMargin = dp(this, 8);
+        clashBanner.setLayoutParams(bannerLp);
+        // 点横幅看这一组每张卡的具体时间。
+        clashBanner.setOnClickListener(v -> showClashDetail());
+        // 默认不占位，由 render() 决定是否显示。
+        clashBanner.setVisibility(View.GONE);
+        root.addView(clashBanner);
 
         notifStatus = new TextView(this);
         notifStatus.setTextSize(11);
@@ -413,6 +435,15 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                     Toast.LENGTH_LONG).show();
             return true;
         });
+        // 撞车提醒：取最近的一组（7 天内、与前一张相差 3 小时内、至少两张）显示在横幅上。
+        // 演示模式和真实模式都用 shown，所以两种数据源行为一致。
+        ClashPlan.Clash clash = ClashPlan.nearest(shown.all(), System.currentTimeMillis());
+        if (clash != null) {
+            clashBanner.setText("⚠ " + clash.text());
+            clashBanner.setVisibility(View.VISIBLE);
+        } else {
+            clashBanner.setVisibility(View.GONE);
+        }
         if (demo == null) {
             updateNotifStatus();
         } else {
@@ -462,6 +493,31 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 listScroll.post(() -> listScroll.scrollTo(0, y));
             }));
         }
+    }
+
+    /** 点击撞车横幅：逐行列出这一组里每张卡的标题和截止时间。 */
+    void showClashDetail() {
+        // 用和 render() 相同的数据源（演示模式取 demo 引擎），结果与横幅一致。
+        Engine shown = demo == null ? engine : demo.engine;
+        ClashPlan.Clash clash = ClashPlan.nearest(shown.all(), System.currentTimeMillis());
+        // 卡片可能在渲染之后被删掉或改了时间，这时已经不存在撞车，收掉横幅即可。
+        if (clash == null) {
+            clashBanner.setVisibility(View.GONE);
+            return;
+        }
+        StringBuilder body = new StringBuilder();
+        for (int i = 0; i < clash.cards.size(); i++) {
+            Engine.Card c = clash.cards.get(i);
+            // 每张卡一行：标题 + 两个空格 + 自然语言截止时间。
+            if (i > 0) body.append("\n");
+            body.append("· ").append(c.displayTitle()).append("  ")
+                    .append(Engine.humanDeadline(c.deadline));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("这几件事挤在一起")
+                .setMessage(body.toString())
+                .setPositiveButton("知道了", null)
+                .show();
     }
 
     /** 分组标题：形如「今天 · 2」，弱化样式，只做视觉分隔。 */
