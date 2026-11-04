@@ -102,6 +102,16 @@ public class ReplayActivity extends Activity {
         row.addView(btn("停止", v -> stop()));
         root.addView(row);
 
+        // 第二排：格式测试，一次发出 5 条不同形状的通知，用于真机验证主 App 的解析。
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams row2lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        row2lp.topMargin = dp(8);
+        row2.setLayoutParams(row2lp);
+        row2.addView(btn("格式测试", v -> formatTest()));
+        root.addView(row2);
+
         status = new TextView(this);
         status.setText("待机");
         status.setTextColor(Color.parseColor("#5FD3A6"));
@@ -189,6 +199,69 @@ public class ReplayActivity extends Activity {
         nm.notify(NotifIds.idFor(index), nb.build());
         int old = NotifIds.cancelFor(index);
         if (old >= 0) nm.cancel(old);
+    }
+
+    /**
+     * 格式测试：一次性发出 5 条不同「形状」的通知，覆盖微信/QQ 在真机上常见的几种样式，
+     * 用来验证主 App 的解析。编号从 9000 起，避开回放用的 1..N，彼此也不互相覆盖。
+     */
+    @SuppressWarnings("deprecation")
+    void formatTest() {
+        long now = System.currentTimeMillis();
+
+        // A：多条消息会话（MessagingStyle 群聊），每条消息带发送者和独立时间。
+        Notification.MessagingStyle ms = new Notification.MessagingStyle("我");
+        if (Build.VERSION.SDK_INT >= 28) {
+            // 会话标题和「这是群聊」的标记只在 API 28+ 生效，低版本跳过。
+            ms.setConversationTitle("格式测试群");
+            ms.setGroupConversation(true);
+        }
+        ms.addMessage("明天20:00前交实验报告", now - 3000, "王老师")
+                .addMessage("周五18:00前报名体测", now - 2000, "班长")
+                .addMessage("收到", now - 1000, "周同学");
+        Notification.Builder a = fmtBuilder(now);
+        a.setStyle(ms)
+                .setContentTitle("格式测试群")
+                .setContentText("周同学: 收到");
+        nm.notify(9000, a.build());
+
+        // B：微信折叠群的形状，正文里直接带「[3条]发送者：内容」。
+        Notification.Builder b = fmtBuilder(now);
+        b.setContentTitle("折叠测试群")
+                .setContentText("[3条]王老师：下周三下午3点期中考试，教二305");
+        nm.notify(9001, b.build());
+
+        // C：只给条数、不给内容（QQ 的「N条新消息」）。
+        Notification.Builder c = fmtBuilder(now);
+        c.setContentTitle("计数测试群")
+                .setContentText("3条新消息");
+        nm.notify(9002, c.build());
+
+        // D：图片消息占位，正文只有「发送者：[图片]」。
+        Notification.Builder d = fmtBuilder(now);
+        d.setContentTitle("图片测试群")
+                .setContentText("班长：[图片]");
+        nm.notify(9003, d.build());
+
+        // E：私聊形状，正文没有「发送者：」前缀。
+        Notification.Builder e = fmtBuilder(now);
+        e.setContentTitle("私聊测试")
+                .setContentText("明天上午9点交作业，别忘了");
+        nm.notify(9004, e.build());
+
+        Toast.makeText(this, "已发出 5 条格式测试通知", Toast.LENGTH_SHORT).show();
+    }
+
+    /** 格式测试用的基础 Builder：沿用回放的 CHANNEL 和小图标，点击后自动消失。 */
+    Notification.Builder fmtBuilder(long when) {
+        Notification.Builder nb = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(this, CHANNEL)
+                : new Notification.Builder(this);
+        nb.setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setAutoCancel(true)
+                .setWhen(when)
+                .setShowWhen(true);
+        return nb;
     }
 
     @Override
