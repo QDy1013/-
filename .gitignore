@@ -1,0 +1,8 @@
+﻿__pycache__/
+*.pyc
+android/build/nopalou/
+android/build/replay/
+android/build/test/
+android/build/*.idsig
+android/build/debug.keystore
+android/build/test_out.txt
