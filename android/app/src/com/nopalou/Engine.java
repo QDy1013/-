@@ -869,7 +869,39 @@ public class Engine {
         return null;
     }
 
+    private boolean splitting = false;   // 正在处理拆出来的子消息，防止再拆
+
+    /** 一条消息里有两件以上各带动作、各带具体时间的事：拆开，各出一张卡（和 Python 版一致）。 */
+    List<String> splitItems(String text, long ts) {
+        List<String> items = new ArrayList<>();
+        if (text == null || text.length() < 8 || text.contains("接龙")) return items;
+        if (detectRevision(text) != null || examHit(text) != null) return items;
+        for (String clause : text.split("[，,；;。\\n：:]")) {
+            clause = clause.trim();
+            if (clause.length() < 4) continue;
+            if (findAction(clause)[1] == null) continue;
+            if (!parseDeadline(clause, ts).ok()) continue;
+            items.add(clause);
+        }
+        return items.size() >= 2 ? items : new ArrayList<String>();
+    }
+
     public void process(Msg m) {
+        if (!splitting && m.text != null) {
+            List<String> items = splitItems(m.text, m.ts);
+            if (items.size() >= 2) {
+                splitting = true;
+                try {
+                    for (int i = 0; i < items.size(); i++) {
+                        process(new Msg(m.id + "#" + (i + 1), m.groupId, m.groupName, m.sender,
+                                items.get(i), m.pkg, m.ts));
+                    }
+                } finally {
+                    splitting = false;
+                }
+                return;
+            }
+        }
         nIn++;
         String t = m.text == null ? "" : m.text;
         if (isNoise(t)) {

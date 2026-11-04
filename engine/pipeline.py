@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import jielong as jl
-from .extract import Extracted, clean_title, extract, human_deadline
+from .extract import Extracted, clean_title, extract, find_action, human_deadline
 from .features import MANUAL_KEYS, Stats, is_noise, vectorize
 from .timeparse import parse_deadline
 
@@ -244,6 +244,28 @@ class Pipeline:
     def _asking(text: str) -> bool:
         return any(w in text for w in REVISION_ASK_WORDS)
 
+    def _split_items(self, text: str, ts: datetime) -> list[str]:
+        """把一条消息拆成"各自带动作、各自带具体时间"的子句；不够两件就返回空列表。
+
+        接龙、更正/撤销、考试通知都不拆（它们有自己的流程）。只有一个时间的消息
+        （"周五前交报告，交到邮箱，逾期不候"）也不会被拆。
+        """
+        if len(text) < 8 or "接龙" in text:
+            return []
+        if self.detect_revision(text) is not None or self._exam_word(text):
+            return []
+        items = []
+        for clause in re.split(r"[，,；;。\n：:]", text):
+            clause = clause.strip()
+            if len(clause) < 4:
+                continue
+            if find_action(clause)[1] is None:
+                continue
+            if parse_deadline(clause, ts).value is None:
+                continue
+            items.append(clause)
+        return items if len(items) >= 2 else []
+
     @staticmethod
     def detect_revision(text: str) -> str | None:
         # 问句（"不用交了吗"）是在打听，不是在下指令
@@ -281,6 +303,18 @@ class Pipeline:
         """处理一条消息，返回本次新增/更新的卡片（可能为空）。"""
         ts = datetime.fromisoformat(msg["ts"]) if isinstance(msg["ts"], str) else msg["ts"]
         text = msg["text"]
+        # 一条消息里有两件以上各带具体时间的事（"周三前交A，周五前交B"）：拆开，各出一张卡
+        if not msg.get("_split"):
+            items = self._split_items(text, ts)
+            if len(items) >= 2:
+                produced_all: list[Card] = []
+                for i, part in enumerate(items):
+                    sub = dict(msg)
+                    sub["text"] = part
+                    sub["msg_id"] = f"{msg['msg_id']}#{i + 1}"
+                    sub["_split"] = True
+                    produced_all.extend(self.process(sub))
+                return produced_all
         gid, sender = msg["group_id"], msg["sender"]
         self.n_in += 1
         produced: list[Card] = []
