@@ -27,7 +27,16 @@ from .timeparse import parse_deadline
 RE_FALLBACK_SPLIT = re.compile(r"[，。；！？,;!?]")
 
 REVISE_WORDS = ("更正", "改为", "改成", "调整为", "不作数", "说错了", "重新发一下")
-REVOKE_WORDS = ("作废", "取消", "忽略", "发错", "算了不", "撤销该", "撤回该")
+# 自然说法：改期/延后/提前。这类词在"调课通知"里也常见（"下次课改到三教302"），
+# 所以单独放一组：只有 _revision_target 找到了目标卡才按更正处理（见 process）。
+NATURAL_REVISE_WORDS = ("延期到", "推迟到", "顺延到", "提前到",
+                         "延期", "推迟", "顺延")
+# "不用交/免交"这类否定说法也算撤销，但必须先指到某张卡才生效（见 process）
+REVOKE_WORDS = ("作废", "取消", "忽略", "发错", "算了不", "撤销该", "撤回该",
+                "不用交", "不用提交", "不需要交", "不需要提交",
+                "无需交", "无需提交", "免交", "不用再交", "不用交了", "不交了")
+# 提问词：出现在消息里说明是在问，不是在下达更正/撤销
+REVISION_ASK_WORDS = ("吗", "？", "?", "呢")
 
 # ---- 考试/日程卡（规则见 docs/考试卡规则.md，和 Java 版行为一致）
 # 明确的考试词：命中就算"提到考试"
@@ -61,7 +70,13 @@ EXAM_BUILDING_PLACE_RE = re.compile(
 
 # 撤销/更正专用词：出现在任何卡里都说明不了指向哪一条，匹配时排除
 REVISION_STOP = ("刚才", "上条", "之前", "那条", "截止", "更正",
-                 "取消", "作废", "改成", "改为", "一下", "今晚", "明天")
+                 "取消", "作废", "改成", "改为", "一下", "今晚", "明天",
+                 # 会误匹配到无关卡片的套话（如"下周一上课，大家不用带电脑"）
+                 "大家", "上课", "下周",
+                 # 调课通知里的常见词，避免"下次课改到三教302"误指向待办卡
+                 "腾讯", "会议", "教室", "下次",
+                 # "请相互转告"套话切出来的二字词
+                 "请相", "相互", "互转", "转告")
 # "刚才"类指代词：配合"30 分钟内"才认为指向刚发的那条消息
 REVISION_PRONOUN_NEAR = ("刚才", "刚刚", "那条")
 # "之前"类指代词：原发送者本人说时，取此人在本群最新的一张卡，不限时间
@@ -226,12 +241,32 @@ class Pipeline:
 
     # ---- 变更 / 撤销是自己看文本判断的，不用任何标签
     @staticmethod
+    def _asking(text: str) -> bool:
+        return any(w in text for w in REVISION_ASK_WORDS)
+
+    @staticmethod
     def detect_revision(text: str) -> str | None:
+        # 问句（"不用交了吗"）是在打听，不是在下指令
+        if Pipeline._asking(text):
+            return None
         if any(w in text for w in REVOKE_WORDS):
             return "revoke"
         if any(w in text for w in REVISE_WORDS):
             return "supersede"
+        # 自然改期词只有对得上某张卡时才算更正（见 process）
+        if any(w in text for w in NATURAL_REVISE_WORDS):
+            return "supersede"
         return None
+
+    @staticmethod
+    def _natural_revision_only(text: str) -> bool:
+        """只命中自然改期词、没命中原七个更正词：可能是调课通知，需先找到目标卡。"""
+        return not any(w in text for w in REVISE_WORDS) \
+            and any(w in text for w in NATURAL_REVISE_WORDS)
+
+    @staticmethod
+    def _revision_like(text: str) -> bool:
+        return any(w in text for w in REVOKE_WORDS + REVISE_WORDS)
 
     def _context(self, group_id: str) -> list[dict]:
         return list(self.recent.get(group_id, [])[-self.keep_context:])
@@ -307,8 +342,13 @@ class Pipeline:
             target = self._apply_exam_revision(gid, sender, text, exam_word, rev, ts)
             self._remember(msg)
             return [target] if target is not None else produced
+        # 问句里出现撤销/更正词：既不算更正，也不能顺势变成一张新待办
+        if rev is None and self._asking(text) and self._revision_like(text):
+            self._remember(msg)
+            return produced
         if rev:
-            target = self._revision_target(msg, text)
+            target = self._revision_target(
+                msg, text, title_only=(rev == "supersede" and self._natural_revision_only(text)))
             if target is not None:
                 if rev == "revoke":
                     target.revoked = True
@@ -324,10 +364,15 @@ class Pipeline:
                     produced.append(target)
                     self._remember(msg)
                     return produced
-            # 对不上任何卡：撤销/更正只对"说得清指的是哪条"的消息生效，
-            # 不能顺势把这句"作废/更正"当成新待办再建一张卡
-            self._remember(msg)
-            return produced
+                self._remember(msg)
+                return produced
+            # 自然改期词（"改到/挪到/延期"…）也可能是调课通知，对不上任何卡时
+            # 不按更正处理，继续走下面的正常消息流程。
+            if not (rev == "supersede" and self._natural_revision_only(text)):
+                # 对不上任何卡：撤销/更正只对"说得清指的是哪条"的消息生效，
+                # 不能顺势把这句"作废/更正"当成新待办再建一张卡
+                self._remember(msg)
+                return produced
 
         # 接龙：独立通道，不依赖分类结果（接龙可能被误判成闲聊）
         j = jl.parse(text, ts)
@@ -617,7 +662,7 @@ class Pipeline:
         target.updated = True
         return target
 
-    def _revision_target(self, msg: dict, text: str) -> Card | None:
+    def _revision_target(self, msg: dict, text: str, title_only: bool = False) -> Card | None:
         """找这条撤销/更正真正指向的那张卡：只在本群、从新到旧找，对不上返回 None。
 
         发送者得是原发送者或老师一类的人，消息还要对得上事项（共同中文词）；
@@ -646,8 +691,14 @@ class Pipeline:
                 continue
             if not trusted and sender != c.sender:
                 continue
-            blob = (c.title or "") + (c.source_text or "")
+            # 自然改期词（改到/挪到/延期…）容易撞上调课通知，只拿卡片标题来对，
+            # 也不走"之前/刚才"这类指代兜底；原来的更正词仍按标题加原文匹配。
+            blob = (c.title or "") if title_only else (c.title or "") + (c.source_text or "")
             hit = any(g in blob for g in keys)
+            if title_only:
+                if hit:
+                    return c
+                continue
             if not hit and far and sender == c.sender:
                 # 原发送者本人说"之前/上条"，不限时间：本群此人最新的一张卡就是目标
                 hit = True

@@ -65,7 +65,17 @@ public class Engine {
     static final String[] VAGUE = {"尽快", "近期", "这两天", "最近", "过几天", "有空", "随时",
             "抓紧", "尽早", "改天", "之后", "等通知", "另行通知"};
     static final String[] REVISE_WORDS = {"更正", "改为", "改成", "调整为", "不作数", "说错了", "重新发一下"};
-    static final String[] REVOKE_WORDS = {"作废", "取消", "忽略", "发错", "算了不", "撤销该", "撤回该"};
+    // 自然说法：改期/延后/提前。这类词在"调课通知"里也常见（"下次课改到三教302"），
+    // 所以单独放一组：只有 revisionTarget 找到了目标卡才按更正处理（见 process）。
+    // 故意不含"改到""挪到"：它们会把调课通知误判成更正。
+    static final String[] NATURAL_REVISE_WORDS = {"延期到", "推迟到", "顺延到", "提前到",
+            "延期", "推迟", "顺延"};
+    // "不用交/免交"这类否定说法也算撤销，但必须先指到某张卡才生效（见 process）
+    static final String[] REVOKE_WORDS = {"作废", "取消", "忽略", "发错", "算了不", "撤销该", "撤回该",
+            "不用交", "不用提交", "不需要交", "不需要提交",
+            "无需交", "无需提交", "免交", "不用再交", "不用交了", "不交了"};
+    // 提问词：出现在消息里说明是在问，不是在下达更正/撤销
+    static final String[] REVISION_ASK_WORDS = {"吗", "？", "?", "呢"};
     static final String[] DEICTIC_WORDS = {"上条", "上一条", "刚才", "之前", "上面", "前面", "那条", "这条"};
     // 判断"说的是哪件事"时忽略的套话，避免 "@所有人""大家" 这类字样把无关消息也算成命中
     static final String[] SUBJECT_NOISE = {"所有人", "全体", "大家", "同学们", "各位", "同学",
@@ -903,8 +913,17 @@ public class Engine {
             return;
         }
 
+        // 问句里出现撤销/更正词：既不算更正，也不能顺势变成一张新待办
+        if (rev == null && revisionAsking(t) && revisionLike(t)) {
+            remember(m);
+            return;
+        }
+
         if (rev != null) {
-            Card target = revisionTarget(m, t);
+            // 只命中自然改期词（"延期/推迟/顺延/提前"）时，可能只是调课通知：
+            // 只拿卡片标题对目标，也不走"之前/刚才"指代兜底；对不上就继续走正常流程。
+            boolean naturalOnly = "supersede".equals(rev) && naturalRevisionOnly(t);
+            Card target = revisionTarget(m, t, naturalOnly);
             if (target != null) {
                 if ("revoke".equals(rev)) {
                     cards.remove(target);
@@ -923,11 +942,15 @@ public class Engine {
                     remember(m);
                     return;
                 }
+                remember(m);
+                return;
             }
             // 对不上任何卡：撤销/更正只对"说得清指的是哪条"的消息生效，
             // 不能顺势把这句"作废/更正"当成新待办再建一张卡
-            remember(m);
-            return;
+            if (!naturalOnly) {
+                remember(m);
+                return;
+            }
         }
 
         if (isJielong(t)) {
@@ -1073,9 +1096,28 @@ public class Engine {
     }
 
     static String detectRevision(String t) {
+        // 问句（"不用交了吗"）是在打听，不是在下指令
+        if (revisionAsking(t)) return null;
         for (String w : REVOKE_WORDS) if (t.contains(w)) return "revoke";
         for (String w : REVISE_WORDS) if (t.contains(w)) return "supersede";
+        // 自然改期词只有对得上某张卡时才算更正（见 process）
+        for (String w : NATURAL_REVISE_WORDS) if (t.contains(w)) return "supersede";
         return null;
+    }
+
+    /** 消息里有提问词：在问，不是在下达更正/撤销。 */
+    static boolean revisionAsking(String t) {
+        return containsAny(t, REVISION_ASK_WORDS);
+    }
+
+    /** 消息里有任何撤销/更正词（含自然改期词）。 */
+    static boolean revisionLike(String t) {
+        return containsAny(t, REVOKE_WORDS) || containsAny(t, REVISE_WORDS) || containsAny(t, NATURAL_REVISE_WORDS);
+    }
+
+    /** 只命中自然改期词、没命中原七个更正词：可能是调课通知，需先找到目标卡。 */
+    static boolean naturalRevisionOnly(String t) {
+        return !containsAny(t, REVISE_WORDS) && containsAny(t, NATURAL_REVISE_WORDS);
     }
 
     Card latestCard(String gid) {
@@ -1146,6 +1188,11 @@ public class Engine {
      * 取此人在本群最新的一张卡。对不上就返回 null，调用方因此什么都不做。
      */
     Card revisionTarget(Msg m, String t) {
+        return revisionTarget(m, t, false);
+    }
+
+    /** titleOnly 为真时只拿卡片标题对目标，不走"之前/刚才"指代兜底（自然改期词用，防调课通知误指）。 */
+    Card revisionTarget(Msg m, String t, boolean titleOnly) {
         String sender = m.sender == null ? "" : m.sender;
         String gid = m.groupId == null ? "" : m.groupId;
         boolean trusted = containsAny(sender, TEACHER_HINTS);
@@ -1164,10 +1211,14 @@ public class Engine {
             Card c = cards.get(i);
             if (!gid.equals(c.groupId)) continue;
             if (!trusted && !sender.equals(c.sender)) continue;
-            String blob = (c.title == null ? "" : c.title) + (c.sourceText == null ? "" : c.sourceText);
+            String blob = (c.title == null ? "" : c.title) + (titleOnly || c.sourceText == null ? "" : c.sourceText);
             boolean hit = false;
             for (String g : keys) {
                 if (blob.contains(g)) { hit = true; break; }
+            }
+            if (titleOnly) {
+                if (hit) return c;
+                continue;
             }
             if (!hit && near) {                      // "刚才"类：30 分钟内
                 long dt = m.ts - c.sourceTs;
