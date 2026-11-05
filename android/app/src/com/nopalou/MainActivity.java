@@ -61,7 +61,7 @@ import java.util.Map;
 import java.util.function.LongConsumer;
 
 /**
- * 「不爬楼」主界面：一屏出结论。
+ * 「楼外」主界面：一屏出结论。
  * 卡片 = 事由 + 截止 + 方式 + 来源；点开能回到原文和上下文。
  */
 public class MainActivity extends Activity implements Engine.SelectedListener {
@@ -227,7 +227,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             if (flat == null || !flat.contains(getPackageName())) {
                 alert()
                         .setTitle("还差一步")
-                        .setMessage("在「通知使用权」里打开「不爬楼」，我才能读到群消息。\n\n"
+                        .setMessage("在「通知使用权」里打开「楼外」，我才能读到群消息。\n\n"
                                 + "只在本机读取和处理，飞行模式下照常工作。")
                         .setPositiveButton("去开启", (d, w) -> startActivity(
                                 new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")))
@@ -286,9 +286,9 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     void showNotifHint() {
         alert()
                 .setTitle("收不到群消息")
-                .setMessage("系统断开了不爬楼的通知读取（部分手机重启后会这样）。"
-                        + "请在「通知使用权」里把不爬楼关掉再打开；\n"
-                        + "如果仍不行，到手机管家里允许不爬楼自启动和后台运行。")
+                .setMessage("系统断开了楼外的通知读取（部分手机重启后会这样）。"
+                        + "请在「通知使用权」里把楼外关掉再打开；\n"
+                        + "如果仍不行，到手机管家里允许楼外自启动和后台运行。")
                 .setPositiveButton("去设置", (d, w) -> {
                     try {
                         startActivity(new Intent(
@@ -919,8 +919,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         }
         // 保活说明固定接在正文末尾，原「让它一直在后台运行」的四行内容一字不改。
         body.append("\n\n保持自动读取不被系统杀掉：\n")
-                .append("1. 在系统设置里允许「不爬楼」自启动和后台运行（vivo：设置 > 应用与权限 > 权限管理 > 自启动）。\n")
-                .append("2. 电池设置里把「不爬楼」设为不限制或允许后台高耗电。\n")
+                .append("1. 在系统设置里允许「楼外」自启动和后台运行（vivo：设置 > 应用与权限 > 权限管理 > 自启动）。\n")
+                .append("2. 电池设置里把「楼外」设为不限制或允许后台高耗电。\n")
                 .append("3. 在最近任务里不要上滑清掉它；可以长按卡片锁定。\n")
                 .append("4. 重启手机后打开一次 App，确认状态是「已连接」。");
 
@@ -2038,7 +2038,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         try {
             Intent i = new Intent(Intent.ACTION_INSERT);
             i.setData(CalendarContract.Events.CONTENT_URI);
-            i.putExtra(CalendarContract.Events.TITLE, "【不爬楼】" + c.displayTitle());
+            i.putExtra(CalendarContract.Events.TITLE, "【楼外】" + c.displayTitle());
             // 描述不写群消息原文，避免系统日历云同步把原文外泄；只写来源与考试要点。
             StringBuilder desc = new StringBuilder();
             desc.append("来源：").append(sourceName(c)).append(" · ").append(c.groupName).append(" · ").append(c.sender);

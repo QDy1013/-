@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「楼外」图标前景：四层逐渐变淡的聊天楼层，楼外一轮朱红的月。内容全部落在自适应图标 66dp 安全区内。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#1C1C1E"
+        android:pathData="M35,40h22a3,3 0 0 1 0,6h-22a3,3 0 0 1 0,-6z" />
+    <path android:fillColor="#1C1C1E" android:fillAlpha="0.55"
+        android:pathData="M35,51h16a3,3 0 0 1 0,6h-16a3,3 0 0 1 0,-6z" />
+    <path android:fillColor="#1C1C1E" android:fillAlpha="0.28"
+        android:pathData="M35,62h10a3,3 0 0 1 0,6h-10a3,3 0 0 1 0,-6z" />
+    <path android:fillColor="#1C1C1E" android:fillAlpha="0.12"
+        android:pathData="M35,73h4a3,3 0 0 1 0,6h-4a3,3 0 0 1 0,-6z" />
+    <path android:fillColor="#E5484D"
+        android:pathData="M64,34a7,7 0 1 0 14,0a7,7 0 1 0 -14,0z" />
+</vector>
