@@ -22,8 +22,10 @@ public final class NotifFilter {
     private NotifFilter() {
     }
 
+    /** 群聊类 App 和学习平台（学习通 / 知到 / 雨课堂，见 PlatformNotice）。 */
     public static boolean accept(String pkg) {
         if (pkg == null || pkg.isEmpty()) return false;
+        if (Engine.PlatformNotice.isPlatform(pkg)) return true;
         for (String p : ALLOWED) {
             if (p.equals(pkg)) return true;
         }

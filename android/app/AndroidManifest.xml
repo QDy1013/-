@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.nopalou"
-    android:versionCode="14"
-    android:versionName="0.14">
+    android:versionCode="15"
+    android:versionName="0.15">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 
@@ -16,6 +16,9 @@
         <package android:name="com.ss.android.lark" />
         <package android:name="com.alibaba.android.rimet" />
         <package android:name="com.tencent.tim" />
+        <package android:name="com.chaoxing.mobile" />
+        <package android:name="com.able.wisdomtree" />
+        <package android:name="com.xuetangx.ykt" />
         <package android:name="com.nopalou.replay" />
     </queries>
 

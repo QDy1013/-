@@ -82,6 +82,12 @@ public class NotifListener extends NotificationListenerService {
             // 系统生成的分组汇总通知只有"3条新消息"这类计数，不是真实消息。
             boolean isSummary = (n.flags & Notification.FLAG_GROUP_SUMMARY) != 0;
 
+            // 学习平台自己发的通知：不是群聊，不拆“发送者：正文”，整条交给平台解析器。
+            if (Engine.PlatformNotice.isPlatform(sbn.getPackageName())) {
+                handlePlatform(eng, sbn, ex, isSummary);
+                return;
+            }
+
             // 标题优先取会话标题：群名通常放在这里，而不是 EXTRA_TITLE。
             CharSequence titleCs = ex.getCharSequence(KEY_CONVERSATION_TITLE);
             // 会话标题为空或只有空白时，退回普通标题。
@@ -205,6 +211,53 @@ public class NotifListener extends NotificationListenerService {
             // 任何没被上面接住的异常都在这里落地，只记诊断日志，绝不向外抛。
             EngineHolder.diag(this, "出错", t.getClass().getSimpleName() + ": " + t.getMessage());
         }
+    }
+
+    /**
+     * 学习平台通知：标题 + 正文（以及收件箱样式里的多行）逐条交给引擎。
+     * 每条原文都记进诊断日志（类别“平台”），用来收集真实样本、校准解析规则；只存本机。
+     */
+    private void handlePlatform(Engine eng, StatusBarNotification sbn, Bundle ex, boolean isSummary) {
+        String pkg = sbn.getPackageName();
+        String app = Engine.PlatformNotice.appName(pkg);
+        if (isSummary) {
+            EngineHolder.diag(this, "跳过", app + " 汇总通知");
+            return;
+        }
+        CharSequence titleCs = ex.getCharSequence(Notification.EXTRA_TITLE);
+        String title = titleCs == null ? "" : titleCs.toString().trim();
+        List<String> bodies = new ArrayList<String>();
+        CharSequence[] lines = ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
+        if (lines != null && lines.length > 1) {
+            for (CharSequence l : lines) {
+                if (l != null && !l.toString().trim().isEmpty()) bodies.add(l.toString().trim());
+            }
+        }
+        if (bodies.isEmpty()) {
+            CharSequence textCs = ex.getCharSequence(Notification.EXTRA_BIG_TEXT);
+            if (textCs == null) textCs = ex.getCharSequence(Notification.EXTRA_TEXT);
+            String text = textCs == null ? "" : textCs.toString().trim();
+            if (!text.isEmpty() || !title.isEmpty()) bodies.add(text);
+        }
+        if (bodies.isEmpty()) {
+            EngineHolder.diag(this, "跳过", app + " 通知没有文字");
+            return;
+        }
+        int before = eng.all().size();
+        for (int i = 0; i < bodies.size(); i++) {
+            String body = bodies.get(i);
+            EngineHolder.diag(this, "平台", app + "｜" + title + "｜" + body);
+            String id = "p" + pkg.hashCode() + "_" + (title + "|" + body).hashCode() + "_" + sbn.getPostTime() + "_" + i;
+            long at = sbn.getPostTime() > 0 ? sbn.getPostTime() : System.currentTimeMillis();
+            eng.processPlatform(new Engine.Msg(id, NotifFilter.groupId(pkg, title), title, app, body, pkg, at));
+        }
+        EngineHolder.lastReceivedAt = System.currentTimeMillis();
+        EngineHolder.lastReceivedGroup = app;
+        EngineHolder.persistLast(this);
+        if (!EngineHolder.saveIfChanged(this)) {
+            EngineHolder.diag(this, "出错", "卡片保存失败，等待下次通知重试");
+        }
+        EngineHolder.diag(this, "收到", app + " · " + bodies.size() + "条 · 卡片 " + before + "→" + eng.all().size());
     }
 
     @Override

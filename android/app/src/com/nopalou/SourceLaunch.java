@@ -32,7 +32,10 @@ final class SourceLaunch {
                     "com.tencent.mobileqq",        // QQ
                     "com.ss.android.lark",         // 飞书
                     "com.alibaba.android.rimet",   // 钉钉
-                    "com.tencent.tim"              // TIM
+                    "com.tencent.tim",             // TIM
+                    "com.chaoxing.mobile",         // 学习通
+                    "com.able.wisdomtree",         // 知到（智慧树）
+                    "com.xuetangx.ykt"             // 雨课堂
             )));
 
     private SourceLaunch() {

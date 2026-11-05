@@ -1046,12 +1046,33 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(text);
 
-        // 弹窗本身只留一个「关闭」，看完就走。
-        alert()
+        // 学习平台通知的完整原文：用来校准解析规则，可一键复制发给开发者。只存本机。
+        StringBuilder samples = new StringBuilder();
+        for (DiagLog.Entry e : DiagLog.recent(50)) {
+            if (!"平台".equals(e.kind)) continue;
+            if (samples.length() > 0) samples.append("\n\n");
+            samples.append(new SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(new java.util.Date(e.time)))
+                    .append('\n').append(e.detail);
+        }
+        if (samples.length() > 0) {
+            text.append("\n\n—— 学习平台通知原文 ——\n" + samples);
+        }
+
+        AlertDialog.Builder b = alert()
                 .setTitle("诊断日志")
                 .setView(scroll)
-                .setPositiveButton("关闭", null)
-                .show();
+                .setPositiveButton("关闭", null);
+        if (samples.length() > 0) {
+            String copied = samples.toString();
+            b.setNeutralButton("复制平台原文", (d, w) -> {
+                android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (clipboard != null) {
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("学习平台通知原文", copied));
+                    Toast.makeText(this, "已复制学习平台通知原文", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
+        b.show();
     }
 
     @Override
@@ -1434,6 +1455,9 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         if (key.contains("钉钉") || key.contains("dingtalk") || key.contains("rimet")) return "钉";
         if (key.contains("tim") || key.contains("com.tencent.tim")) return "T";
         if (key.contains("qq") || key.contains("com.tencent.mobileqq")) return "Q";
+        if (key.contains("学习通") || key.contains("chaoxing")) return "学";
+        if (key.contains("知到") || key.contains("wisdomtree")) return "知";
+        if (key.contains("雨课堂") || key.contains("xuetangx")) return "雨";
         String trimmed = name == null ? "" : name.trim();
         return trimmed.isEmpty() ? "源" : trimmed.substring(0, 1);
     }
@@ -1446,6 +1470,9 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         if (key.contains("钉钉") || key.contains("dingtalk") || key.contains("rimet")) return Color.parseColor("#2E7CF6");
         if (key.contains("tim") || key.contains("com.tencent.tim")) return Color.parseColor("#0FA9C9");
         if (key.contains("qq") || key.contains("com.tencent.mobileqq")) return Color.parseColor("#2B7DE9");
+        if (key.contains("学习通") || key.contains("chaoxing")) return Color.parseColor("#E8452C");
+        if (key.contains("知到") || key.contains("wisdomtree")) return Color.parseColor("#1A9E6A");
+        if (key.contains("雨课堂") || key.contains("xuetangx")) return Color.parseColor("#2F6BFF");
         return Ui.BLUE;
     }
 

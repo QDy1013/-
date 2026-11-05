@@ -175,6 +175,7 @@ public class Engine {
         public long deadline;          // 0 = 待确认
         public long sourceTs;          // 原消息时间，用来判断"刚才那条"是否还在 30 分钟内
         public String jielongKey;      // 接龙标题（去掉时间括注），同群同标题只保留一张卡
+        public String platformKey;     // 学习平台通知：课程 + 事项名，同平台同键只保留一张卡
         public boolean needsConfirm, updated;
         public double confidence;
         public String reason = "";
@@ -202,6 +203,9 @@ public class Engine {
                 case "com.ss.android.lark": return "飞书";
                 case "com.alibaba.android.rimet": return "钉钉";
                 case "com.tencent.tim": return "TIM";
+                case "com.chaoxing.mobile": return "学习通";
+                case "com.able.wisdomtree": return "知到";
+                case "com.xuetangx.ykt": return "雨课堂";
                 case "com.nopalou.replay": return "测试通知";
                 case "com.android.shell":
                 case "android": return "系统通知";
@@ -1221,6 +1225,76 @@ public class Engine {
         notifyChanged();
     }
 
+    /**
+     * 学习平台（学习通 / 知到 / 雨课堂）自己发的通知：不走群聊分类和发送者信任，
+     * 按模板解析出事项后直接出卡；同平台同课程同事项名只保留一张，改期就更新、撤回就删掉。
+     *
+     * @return true 表示这条通知已处理（包括判定为不是待办而忽略）
+     */
+    public boolean processPlatform(Msg m) {
+        String app = PlatformNotice.appName(m.pkg);
+        if (app == null) return false;
+        nIn++;
+        PlatformNotice.Notice n = PlatformNotice.parse(m.pkg, m.groupName, m.text, m.ts);
+        if (n == null) {
+            nNoise++;
+            return true;
+        }
+        nLevel3++;
+        // 用户移除过的同一件事：平台重复推送时不再顶回首页。
+        for (Card r : removedCards) {
+            if (m.pkg.equals(r.sourcePackage) && n.key.equals(r.platformKey) && !PlatformNotice.UPDATE.equals(n.action)) return true;
+        }
+        Card same = null;
+        for (Card c : cards) {
+            if (m.pkg.equals(c.sourcePackage) && n.key.equals(c.platformKey)) { same = c; break; }
+        }
+        if (PlatformNotice.REVOKE.equals(n.action)) {
+            if (same != null) {
+                cards.remove(same);
+                notifyChanged();
+            }
+            return true;
+        }
+        if (same != null) {
+            boolean changed = false;
+            if (n.deadline > 0 && n.deadline != same.deadline && !same.deadlineUserSet) {
+                same.deadline = n.deadline;
+                same.deadlineText = humanDeadline(n.deadline);
+                same.needsConfirm = !n.timeSure;
+                same.reason = same.needsConfirm ? TIME_UNCERTAIN : "";
+                same.updated = true;
+                same.lastRevisionText = n.raw;
+                changed = true;
+            }
+            if (changed) notifyChanged();
+            return true;          // 同一件事的重复推送：有新时间就改期，没有就忽略
+        }
+        Card c = new Card();
+        c.id = newCardId();
+        c.kind = n.kind;
+        c.title = n.title;
+        c.platformKey = n.key;
+        c.deadline = n.deadline;
+        c.deadlineText = humanDeadline(n.deadline);
+        c.needsConfirm = n.deadline == 0 || !n.timeSure;
+        c.channel = "exam".equals(n.kind) ? null : app;
+        c.sourcePackage = m.pkg;
+        c.groupId = m.pkg + "|" + (n.course.isEmpty() ? app : n.course);
+        c.groupName = n.course.isEmpty() ? app : n.course;
+        c.sender = "平台通知";
+        c.sourceId = m.id;
+        c.sourceText = n.raw;
+        c.sourceTs = m.ts;
+        c.confidence = 0.9;
+        c.reason = n.deadline == 0 ? "通知里没有写截止时间，请到" + app + "里查看"
+                : c.needsConfirm ? TIME_UNCERTAIN : "";
+        c.context = new ArrayList<>();
+        cards.add(c);
+        notifyChanged();
+        return true;
+    }
+
     static String detectRevision(String t) {
         // 问句（"不用交了吗"）是在打听，不是在下指令
         if (revisionAsking(t)) return null;
@@ -1487,6 +1561,8 @@ public class Engine {
                     && Objects.equals(card.groupId, active.groupId)
                     && Objects.equals(card.jielongKey, active.jielongKey)
                     && (!blank(card.jielongKey) || Objects.equals(card.title, active.title))) return false;
+            if (!blank(card.platformKey) && Objects.equals(card.platformKey, active.platformKey)
+                    && Objects.equals(card.sourcePackage, active.sourcePackage)) return false;
         }
         removedCards.remove(card);
         card.removedAt = 0;
@@ -1580,6 +1656,7 @@ public class Engine {
             w.write("deadline\t" + c.deadline + "\n");
             w.write("sourceTs\t" + c.sourceTs + "\n");
             w.write("jielongKey\t" + esc(c.jielongKey) + "\n");
+            if (c.platformKey != null) w.write("platformKey\t" + esc(c.platformKey) + "\n");
             w.write("needsConfirm\t" + (c.needsConfirm ? "1" : "0") + "\n");
             w.write("updated\t" + (c.updated ? "1" : "0") + "\n");
             w.write("done\t" + (c.done ? "1" : "0") + "\n");
@@ -1639,6 +1716,7 @@ public class Engine {
             else if ("deadline".equals(key)) cur.deadline = toLong(val, 0);
             else if ("sourceTs".equals(key)) cur.sourceTs = toLong(val, 0);
             else if ("jielongKey".equals(key)) cur.jielongKey = unesc(val);
+            else if ("platformKey".equals(key)) cur.platformKey = unesc(val);
             else if ("needsConfirm".equals(key)) cur.needsConfirm = "1".equals(val.trim());
             else if ("updated".equals(key)) cur.updated = "1".equals(val.trim());
             else if ("done".equals(key)) cur.done = "1".equals(val.trim());
@@ -1855,4 +1933,231 @@ public class Engine {
     }
 
     public List<Card> all() { return cards; }
+
+    /**
+     * 学习平台（学习通 / 知到 / 雨课堂）自己发出的通知。
+     *
+     * 和群聊不同：发送方就是平台，格式是模板句，不需要判断“是不是老师说的”。
+     * 这里只做纯文本解析：是不是一件要做的事、叫什么、哪门课、什么时候截止、是新发布还是改期 / 撤回。
+     * 纯 Java，不依赖 android，方便在电脑上直接跑测试。
+     *
+     * 规则是按平台通知常见写法写的，还没有用真实样本校准；监听器会把这几个平台的原始通知
+     * 记进诊断日志（kind = “平台”），拿到真实样本后再补规则。
+     */
+    public static final class PlatformNotice {
+
+        /** 包名 → 显示名。 */
+        static final String[][] APPS = {
+                {"com.chaoxing.mobile", "学习通"},
+                {"com.able.wisdomtree", "知到"},
+                {"com.xuetangx.ykt", "雨课堂"},
+        };
+
+        public static final String NEW = "new";
+        public static final String UPDATE = "update";
+        public static final String REVOKE = "revoke";
+
+        private PlatformNotice() {
+        }
+
+        public static boolean isPlatform(String pkg) {
+            return appName(pkg) != null;
+        }
+
+        /** 平台显示名；不是学习平台返回 null。 */
+        public static String appName(String pkg) {
+            if (pkg == null) return null;
+            for (String[] app : APPS) {
+                if (app[0].equals(pkg)) return app[1];
+            }
+            return null;
+        }
+
+        /** 解析结果。 */
+        public static final class Notice {
+            /** todo 或 exam。 */
+            public String kind;
+            public String title;
+            /** 课程名，可能为空串。 */
+            public String course;
+            /** 截止时间，0 表示通知里没写。 */
+            public long deadline;
+            /** 时间来自明确的日期时刻（而不是只有“明天”这类）。 */
+            public boolean timeSure;
+            /** new / update / revoke。 */
+            public String action;
+            /** 同一件事的去重键：课程 + 标题，去空白。 */
+            public String key;
+            /** 原文（标题 + 正文）。 */
+            public String raw;
+        }
+
+        // ---------- 词表 ----------
+        /** 是一件“要做的事”：作业类。 */
+        private static final String[] TASK_WORDS = {
+                "作业", "习题", "练习", "实验报告", "报告", "论文", "讨论", "问卷", "任务点", "任务", "预习", "复习题",
+        };
+        /** 考试类：出考试卡。 */
+        private static final String[] EXAM_WORDS = {
+                "考试", "测验", "小测", "随堂测", "测试", "期中", "期末",
+        };
+        /** 不是待办：批改结果、成绩、互动消息、实时课堂事件。 */
+        private static final String[] NOT_TODO = {
+                "批改", "成绩", "得分", "分数", "评分", "已截止", "已结束", "已过期", "答案已公布", "解析已",
+                "点赞", "回复了你", "评论了", "关注了你", "私信",
+                "签到", "直播", "正在上课", "开始上课", "课堂已开始", "弹幕",
+        };
+        private static final String[] REVOKE_WORDS = {"撤回", "已删除", "删除了", "已取消", "取消了", "作废"};
+        private static final String[] UPDATE_WORDS = {"延期", "延长", "延至", "推迟", "顺延", "调整", "修改了截止", "更改", "变更"};
+        /** 通知标题里这些词说明它是泛称（“作业通知”），不是课程名。 */
+        private static final String[] GENERIC_TITLE = {
+                "通知", "提醒", "消息", "学习通", "雨课堂", "知到", "智慧树", "超星", "系统", "助手", "待办",
+        };
+
+        private static final Pattern P_BRACKET = Pattern.compile("【([^】]{1,30})】");
+        private static final Pattern P_BOOK = Pattern.compile("《([^》]{1,40})》");
+        private static final Pattern P_QUOTE = Pattern.compile("[「“\"]([^」”\"]{1,40})[」”\"]");
+        private static final Pattern P_LABEL_NAME = Pattern.compile(
+                "(?:作业|测验|考试|小测|讨论|任务点|任务|问卷|练习)[：:]\\s*([^，。；,;\\n]{2,30}?)(?=\\s*(?:[，。；,;\\n]|将于|请于|需于|截止|$))");
+        private static final Pattern P_COURSE_LABEL = Pattern.compile("(?:课程|所属课程)[：:]\\s*([^，。；,;\\n]{1,30})");
+        private static final Pattern P_START_LABEL = Pattern.compile("(?:开始|发布|开放|布置)(?:时间|日期)[：:]?\\s*[^，。；,;\\n]*");
+        private static final Pattern P_END_LABEL = Pattern.compile("(?:截止|结束|截至|到期)(?:时间|日期)?[：:]\\s*");
+        private static final Pattern P_RELATIVE = Pattern.compile(
+                "(?:还有|还剩|剩余|将在|将于|距离截止(?:还有)?)\\s*(\\d{1,3})\\s*(分钟|小时|天)\\s*(?:后)?\\s*(?:截止|结束|到期)?");
+        private static final Pattern P_LEAD_NOISE = Pattern.compile(
+                "^(?:【[^】]*】|\\[[^\\]]*\\]|您|你|有|一个|一份|新的|新|老师|教师|发布了|布置了|发布|布置|提醒|通知|[：:，,\\s])+");
+
+        /**
+         * 解析一条平台通知；不是待办（成绩、签到、互动消息、没有任务词）时返回 null。
+         *
+         * @param title 通知标题（可能是课程名，也可能是“作业通知”这类泛称）
+         * @param text  通知正文
+         * @param ts    通知时间
+         */
+        public static Notice parse(String pkg, String title, String text, long ts) {
+            String app = appName(pkg);
+            if (app == null) return null;
+            String t = title == null ? "" : title.trim();
+            String body = text == null ? "" : text.trim();
+            String raw = t.isEmpty() ? body : body.isEmpty() ? t : t + "\n" + body;
+            if (raw.isEmpty()) return null;
+            String flat = raw.replace('\n', ' ');
+
+            boolean exam = containsAny(flat, EXAM_WORDS);
+            boolean task = exam || containsAny(flat, TASK_WORDS);
+            if (!task) return null;
+            if (containsAny(flat, NOT_TODO)) return null;
+
+            Notice n = new Notice();
+            n.raw = raw;
+            n.kind = exam ? "exam" : "todo";
+            n.action = containsAny(flat, REVOKE_WORDS) ? REVOKE : containsAny(flat, UPDATE_WORDS) ? UPDATE : NEW;
+            n.course = course(t, flat);
+            n.title = itemTitle(flat, n.course, exam);
+
+            long[] d = deadline(flat, ts);
+            n.deadline = d[0];
+            n.timeSure = d[1] == 1;
+            // 通知里的截止时间已经过了：不是要做的事（多半是“已截止”换了种说法）。
+            if (n.deadline > 0 && n.deadline < ts && !REVOKE.equals(n.action)) return null;
+            n.key = (n.course + "|" + n.title).replaceAll("\\s+", "");
+            return n;
+        }
+
+        /** 课程名：【课程】、“课程：xx”，或者不是泛称的通知标题。 */
+        static String course(String title, String flat) {
+            Matcher m = P_COURSE_LABEL.matcher(flat);
+            if (m.find()) return m.group(1).trim();
+            m = P_BRACKET.matcher(flat);
+            while (m.find()) {
+                String c = m.group(1).trim();
+                if (!containsAny(c, GENERIC_TITLE) && !containsAny(c, TASK_WORDS) && !containsAny(c, EXAM_WORDS)) return c;
+            }
+            if (!title.isEmpty() && title.length() <= 30 && !containsAny(title, GENERIC_TITLE)
+                    && !containsAny(title, TASK_WORDS) && !containsAny(title, EXAM_WORDS)) return title;
+            return "";
+        }
+
+        /** 事项名：《名称》/「名称」优先，否则取含任务词的第一个子句并去掉“老师发布了”等前缀。 */
+        static String itemTitle(String flat, String course, boolean exam) {
+            String label = exam ? examLabel(flat) : taskLabel(flat);
+            String name = null;
+            Matcher m = P_BOOK.matcher(flat);
+            while (m.find() && name == null) {
+                String c = m.group(1).trim();
+                if (!c.equals(course)) name = c;
+            }
+            if (name == null) {
+                m = P_QUOTE.matcher(flat);
+                if (m.find()) name = m.group(1).trim();
+            }
+            if (name == null) {
+                // “布置了新作业：链表练习”“测验：第一单元”
+                m = P_LABEL_NAME.matcher(flat);
+                if (m.find()) name = m.group(1).trim();
+            }
+            if (name != null && !name.isEmpty()) {
+                boolean labelled = containsAny(name, TASK_WORDS) || containsAny(name, EXAM_WORDS);
+                return limit(labelled ? name : label + "：" + name);
+            }
+            for (String clause : flat.split("[，。；！？,;!?\\n]")) {
+                String c = clause.trim();
+                if (!(containsAny(c, TASK_WORDS) || containsAny(c, EXAM_WORDS))) continue;
+                c = P_BRACKET.matcher(c).replaceAll("");
+                c = c.replaceAll("(?:将于|请于|需于|于|在).*$", "");
+                c = c.replaceAll("(?:截止|结束|即将|快要|马上).*$", "");
+                c = P_LEAD_NOISE.matcher(c).replaceFirst("").trim();
+                if (!course.isEmpty() && c.startsWith(course)) c = c.substring(course.length()).trim();
+                c = c.replaceAll("^[的：:\\s]+", "");
+                if (c.length() >= 2) return limit(c);
+            }
+            return label;
+        }
+
+        private static String taskLabel(String flat) {
+            for (String w : TASK_WORDS) if (flat.contains(w)) return "任务点".equals(w) || "任务".equals(w) ? "任务" : w;
+            return "作业";
+        }
+
+        private static String examLabel(String flat) {
+            for (String w : EXAM_WORDS) if (flat.contains(w)) return "期中".equals(w) || "期末".equals(w) ? w + "考试" : w;
+            return "考试";
+        }
+
+        /**
+         * 截止时间：先找“截止时间：xx”这类标签后面的时间，再去掉“开始/发布时间”整段后解析全文，
+         * 最后识别“还有 2 小时截止”这类相对时间。返回 {时间, 是否确定(1/0)}。
+         */
+        static long[] deadline(String flat, long ts) {
+            Matcher label = P_END_LABEL.matcher(flat);
+            if (label.find()) {
+                Engine.Deadline d = Engine.parseDeadline(flat.substring(label.end()), ts);
+                if (d.ok()) return new long[]{d.value, "high".equals(d.conf) ? 1 : 0};
+            }
+            String withoutStart = P_START_LABEL.matcher(flat).replaceAll(" ");
+            Engine.Deadline d = Engine.parseDeadline(withoutStart, ts);
+            if (d.ok()) return new long[]{d.value, "high".equals(d.conf) ? 1 : 0};
+            Matcher rel = P_RELATIVE.matcher(flat);
+            if (rel.find()) {
+                long n = Long.parseLong(rel.group(1));
+                String unit = rel.group(2);
+                long ms = "分钟".equals(unit) ? 60_000L : "小时".equals(unit) ? 3600_000L : 24 * 3600_000L;
+                // 相对时间按通知时间推算，精度只到分钟，标为不确定让用户核对。
+                long v = ts + n * ms;
+                return new long[]{v - v % 60_000L, 0};
+            }
+            return new long[]{0, 0};
+        }
+
+        private static String limit(String s) {
+            s = s.trim();
+            return s.length() > 30 ? s.substring(0, 30) + "…" : s;
+        }
+
+        private static boolean containsAny(String s, String[] words) {
+            if (s == null) return false;
+            for (String w : words) if (s.contains(w)) return true;
+            return false;
+        }
+    }
 }
