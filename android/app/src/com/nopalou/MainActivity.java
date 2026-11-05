@@ -177,9 +177,16 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             });
         }
         // 档案填完回到主界面再来提示权限，避免两个弹窗叠在一起。
-        if (!accessChecked && ProfileStore.exists(this)) {
+        if (setupDialog != null && setupDialog.isShowing()) {
+            // 从系统设置页回来：刷新每一步的完成状态。
+            fillSetup();
+        } else if (!accessChecked) {
             accessChecked = true;
-            ensureNotificationAccess();
+            if (SetupGuide.shouldAutoShow(this)) {
+                uiHandler.postDelayed(() -> {
+                    if (resumed) showSetupGuide();
+                }, 350);
+            }
         }
     }
 
@@ -458,7 +465,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         liveTools.setBackgroundColor(Ui.BG);
         autoReadButton = stylePrimary(button("开启自动读取", v -> {
             if (WatchdogJob.accessEnabled(this)) showHealthCheck();
-            else showNotifHint();
+            else showSetupGuide();
         }));
         liveTools.addView(autoReadButton, new LinearLayout.LayoutParams(-1, dp(this, 52)));
         root.addView(liveTools);
@@ -777,6 +784,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         body.setOrientation(LinearLayout.VERTICAL);
         body.addView(sheetTitle("更多"));
         menuSection(body, "自动读取");
+        menuRow(body, holder, "后台保活设置", SetupGuide.allRecommendedDone(this) ? "已完成 · 通知、后台运行、自启动"
+                : "还有步骤没完成，可能收不到群消息", SetupGuide.allRecommendedDone(this) ? Ui.TEXT : Ui.AMBER_TX, this::showSetupGuide);
         menuRow(body, holder, "自动读取自检", "检查权限、连接和后台限制", Ui.TEXT, this::showHealthCheck);
         menuRow(body, holder, "通知读取权限", "系统设置里的通知使用权", Ui.TEXT,
                 () -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")));
@@ -980,14 +989,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
     /** 打开系统的电池优化页面；没有这个页面的设备给一句提示，不让点击崩掉。 */
     void openBatterySettings() {
-        try {
-            // 直接跳「电池优化」总列表，用户在里面把不爬楼设为不限制。
-            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-        } catch (Exception ignored) {
-            // 个别 ROM 没有这个页面，退回文字提示。
-            Toast.makeText(this, "这台手机没有电池优化页面，请到系统设置里手动找",
-                    Toast.LENGTH_LONG).show();
-        }
+        // 直接弹系统授权框；不支持时 SetupGuide 会退回电池优化列表或应用详情页。
+        SetupGuide.requestBattery(this);
     }
 
     /** 相对时间：自检里沿用状态条那套写法，两处口径保持一致。 */
@@ -1803,6 +1806,142 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         } else {
             Toast.makeText(this, "系统未授予通知权限", Toast.LENGTH_SHORT).show();
         }
+        if (setupDialog != null && setupDialog.isShowing()) fillSetup();
+    }
+
+    private android.app.Dialog setupDialog;
+    private LinearLayout setupBody;
+    private Button setupDone;
+
+    /**
+     * 首次安装引导：「让自动整理一直在线」清单。
+     * 通知使用权是必需项；电池不受限、自启动是推荐项（国产系统默认会杀后台）；到期提醒可选。
+     * 每一步点了就跳到对应系统页面，回到 App 时自动刷新完成状态。
+     */
+    void showSetupGuide() {
+        if (setupDialog != null && setupDialog.isShowing()) {
+            fillSetup();
+            return;
+        }
+        setupBody = new LinearLayout(this);
+        setupBody.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout footer = new LinearLayout(this);
+        footer.setPadding(0, dp(this, 12), 0, 0);
+        setupDone = stylePrimary(button("稍后再说", v -> {
+            if (!SetupGuide.allRecommendedDone(this)) SetupGuide.snooze(this);
+            if (setupDialog != null) setupDialog.dismiss();
+        }));
+        footer.addView(setupDone, new LinearLayout.LayoutParams(-1, dp(this, 52)));
+        fillSetup();
+        setupDialog = showSheet(setupBody, footer);
+        setupDialog.setOnDismissListener(d -> {
+            setupDialog = null;
+            render();
+        });
+    }
+
+    void fillSetup() {
+        if (setupBody == null) return;
+        setupBody.removeAllViews();
+        boolean access = WatchdogJob.accessEnabled(this);
+        boolean battery = WatchdogJob.batteryIgnored(this);
+        boolean autostart = SetupGuide.autostartVisited(this);
+        boolean remind = ReminderReceiver.isEnabled(this) && ReminderReceiver.canNotify(this);
+        int done = (access ? 1 : 0) + (battery ? 1 : 0) + (autostart ? 1 : 0);
+
+        TextView title = uiText("让自动整理一直在线", 21, Ui.TEXT, false);
+        title.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        LinearLayout.LayoutParams tLp = lp(-1, -2);
+        tLp.topMargin = dp(this, 16);
+        setupBody.addView(title, tLp);
+        TextView intro = uiText("手机会在后台悄悄关掉不常用的应用。做完下面三步，群里的作业、考试和接龙才能一直自动整理。",
+                14, Ui.SUB, false);
+        intro.setLineSpacing(dp(this, 4), 1f);
+        LinearLayout.LayoutParams iLp = lp(-1, -2);
+        iLp.topMargin = dp(this, 8);
+        setupBody.addView(intro, iLp);
+
+        // 进度条
+        LinearLayout progress = new LinearLayout(this);
+        for (int i = 0; i < 3; i++) {
+            View seg = new View(this);
+            seg.setBackground(Ui.round(this, i < done ? Ui.GREEN : Ui.FILL, 3));
+            LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(0, dp(this, 6), 1);
+            if (i > 0) sLp.leftMargin = dp(this, 6);
+            progress.addView(seg, sLp);
+        }
+        LinearLayout.LayoutParams pLp = lp(-1, -2);
+        pLp.topMargin = dp(this, 18);
+        setupBody.addView(progress, pLp);
+        TextView count = uiText(done == 3 ? "已全部完成" : "已完成 " + done + " / 3", 12, done == 3 ? Ui.GREEN : Ui.MUTE, true);
+        count.setPadding(0, dp(this, 8), 0, dp(this, 6));
+        setupBody.addView(count);
+
+        setupStep(1, "打开通知使用权", "必需 · 只在本机读取群消息通知，不联网", access, "已开启", "去开启",
+                () -> {
+                    try {
+                        startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"));
+                    } catch (Exception e) {
+                        Toast.makeText(this, "请到系统设置里搜索「通知使用权」", Toast.LENGTH_LONG).show();
+                    }
+                });
+        setupStep(2, "允许后台运行", "推荐 · 不受电池优化限制，锁屏后也能收到", battery, "已允许", "允许",
+                () -> SetupGuide.requestBattery(this));
+        setupStep(3, "允许自启动", "推荐 · " + SetupGuide.autostartHint(), autostart, "已去设置", "去设置",
+                () -> SetupGuide.openAutostart(this));
+        setupStep(4, "填写我的档案", "可选 · 姓名、班级、课程，用来判断哪条消息和你有关", ProfileStore.exists(this),
+                "已填写", "去填写", () -> startActivity(new Intent(this, ProfileActivity.class)));
+        setupStep(5, "到期提醒", "可选 · 截止前两小时发一条提醒", remind, "已开启", "开启", () -> {
+            if (ReminderReceiver.isEnabled(this) && ReminderReceiver.canNotify(this)) {
+                showDeadlineReminderSettings();
+            } else if (Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_REMINDER_PERMISSION);
+            } else {
+                enableDeadlineReminder();
+                fillSetup();
+            }
+        });
+        if (setupDone != null) setupDone.setText(done == 3 ? "全部就绪" : access ? "稍后再说" : "稍后再说（暂时收不到群消息）");
+    }
+
+    private void setupStep(int n, String title, String desc, boolean ok, String okLabel, String action, Runnable run) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(this, 2), dp(this, 14), dp(this, 2), dp(this, 14));
+        row.setBackground(Ui.ripple(this, null, Ui.press(), 12));
+        View mark;
+        if (ok) {
+            mark = new View(this);
+            mark.setBackground(new Ui.CheckCircle(this, Ui.GREEN, Ui.GREEN, 28, true));
+        } else {
+            TextView num = uiText(String.valueOf(n), 14, Ui.TEXT, true);
+            num.setGravity(Gravity.CENTER);
+            GradientDrawable ring = Ui.disc(this, Ui.CARD);
+            ring.setStroke(dp(this, 1.5f), Ui.LINE);
+            num.setBackground(ring);
+            mark = num;
+        }
+        row.addView(mark, lp(dp(this, 28), dp(this, 28)));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.addView(uiText(title, 16, Ui.TEXT, true));
+        TextView d = uiText(desc, 12, Ui.SUB, false);
+        d.setLineSpacing(dp(this, 2), 1f);
+        d.setPadding(0, dp(this, 5), 0, 0);
+        col.addView(d);
+        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, -2, 1);
+        cLp.leftMargin = dp(this, 14);
+        cLp.rightMargin = dp(this, 10);
+        row.addView(col, cLp);
+        TextView btn = uiText(ok ? okLabel : action, 13, ok ? Ui.GREEN : Ui.ACCENT, true);
+        btn.setGravity(Gravity.CENTER);
+        btn.setPadding(dp(this, 14), 0, dp(this, 14), 0);
+        if (!ok) btn.setBackground(Ui.round(this, Ui.ACCENT_BG, 16));
+        row.addView(btn, lp(-2, dp(this, 34)));
+        row.setOnClickListener(v -> run.run());
+        if (n > 1) setupBody.addView(Ui.hairline(this));
+        setupBody.addView(row, lp(-1, -2));
     }
 
     void showCardEdit(Engine.Card card) {
