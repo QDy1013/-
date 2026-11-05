@@ -39,7 +39,7 @@ BURST_WINDOW_MIN = 10
 NOTIFIER_MIN_HISTORY = 3
 NOTIFIER_RATIO = 0.30
 
-RE_AT_ALL = re.compile(r"@\s*所有人|@\s*全体")
+RE_AT_ALL = re.compile(r"@\s*所有人|@\s*全体|\[有全体消息\]")
 RE_URL = re.compile(r"https?://|www\.")
 
 

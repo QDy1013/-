@@ -15,8 +15,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
-import java.util.UUID;
+import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -109,7 +110,7 @@ public class Engine {
     static final Pattern P_NOON_BEFORE = Pattern.compile("中午\\s*(?:之前|前)");
     static final Pattern P_TITLE_TIME_WORDS = Pattern.compile(
             "大后天|后天|明天|明日|明晚|明早|今天|今日|今晚|今早|当天|上午|早上|早晨|凌晨|中午|正午|下午|傍晚|晚上|晚间|夜里");
-    static final Pattern P_ATALL = Pattern.compile("@\\s*所有人|@\\s*全体");
+    static final Pattern P_ATALL = Pattern.compile("@\\s*所有人|@\\s*全体|\\[有全体消息\\]");
     static final Pattern P_SPLIT = Pattern.compile("[，。；;\\n！!？?]");
     // 点号后紧跟一两位数字时按月日处理，例如“3.23 22:00 前报名”。
     static final Pattern P_NUMLINE = Pattern.compile(
@@ -159,6 +160,14 @@ public class Engine {
 
     public static class Card {
         public String id, kind, title, channel, place, groupId, groupName, sender, sourceId, sourceText;
+        public String sourcePackage;
+        public boolean deadlineUserSet;
+
+        public String deadlineHint() {
+            if (deadlineUserSet) return null;
+            return uncertainClassDeadline(blank(lastRevisionText) ? sourceText : lastRevisionText);
+        }
+        private static final Pattern PACKAGE_NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+");
         String titleOverride;
         String lastRevisionText;
         public String bring;           // 考试卡专用：要带的东西（"带学生证和2B铅笔" → 学生证和2B铅笔）
@@ -171,9 +180,34 @@ public class Engine {
         public String reason = "";
         public List<String> context = new ArrayList<>();
         public boolean done;
+        long removedAt;
 
         public String displayTitle() {
             return titleOverride == null ? title : titleOverride;
+        }
+
+        public String sourcePackageName() {
+            if (!blank(sourcePackage)) return sourcePackage.trim();
+            if (groupId == null) return "";
+            int separator = groupId.indexOf('|');
+            String candidate = separator < 0 ? groupId : groupId.substring(0, separator);
+            if (candidate.indexOf('.') < 0) return "";
+            return PACKAGE_NAME.matcher(candidate).matches() ? candidate : "";
+        }
+
+        public String sourceAppName() {
+            switch (sourcePackageName()) {
+                case "com.tencent.mm": return "微信";
+                case "com.tencent.mobileqq": return "QQ";
+                case "com.ss.android.lark": return "飞书";
+                case "com.alibaba.android.rimet": return "钉钉";
+                case "com.tencent.tim": return "TIM";
+                case "com.nopalou.replay": return "测试通知";
+                case "com.android.shell":
+                case "android": return "系统通知";
+                case "demo": return "演示样例";
+                default: return "来源待确认";
+            }
         }
 
         public long calendarStart() {
@@ -254,6 +288,9 @@ public class Engine {
     // ---------- 状态 ----------
     final double[] intercept = new double[4];
     final List<Card> cards = new ArrayList<>();
+    private final List<Card> removedCards = new ArrayList<>();
+    private long stateRevision;
+    private long savedRevision;
     long seq;                                                // 已发出的最大卡片编号，单调递增
     final Map<String, List<Pending>> candidates = new HashMap<>();
     final Map<String, long[]> senderStat = new HashMap<>();   // group|sender -> {total, notify}
@@ -685,11 +722,21 @@ public class Engine {
         }
         if (!hasTime) {
             long cand = at(sendCalendar(base), 23, 59);
+            if (uncertainClassDeadline(t) != null) return new Deadline(cand, false, "low");
             return new Deadline(cand, false, high ? "high" : "medium");
         }
         long cand = at(sendCalendar(base), hh, mm);
         boolean expired = cand < send;
         return new Deadline(cand, true, expired ? "low" : (high ? "high" : "medium"));
+    }
+
+    static final Pattern P_CLASS_DEADLINE = Pattern.compile(
+            "(?:(?:\\d{1,2}月\\d{1,2}[日号]?|今天|明天|后天|下周[一二三四五六日天])\\s*)?(?:下课前|放学前)");
+
+    static String uncertainClassDeadline(String text) {
+        if (blank(text) || P_CLOCK.matcher(text).find() || P_HOUR.matcher(text).find()) return null;
+        Matcher hint = P_CLASS_DEADLINE.matcher(text);
+        return hint.find() ? hint.group().trim() : null;
     }
 
     static Calendar sendCalendar(long ts) {
@@ -705,6 +752,8 @@ public class Engine {
     // ---------- 抽取 ----------
     static String findChannel(String t) {
         for (String c : CHANNELS) if (t.contains(c)) return c;
+        Matcher recipient = Pattern.compile("(?:交|提交|上交|发|发送)(?:给|至)\\s*([\\p{IsHan}]{0,6}?(?:组长|老师|助教|课代表|班长|辅导员|负责人))(?:处)?(?:[，。；！!\\s]|$)").matcher(t);
+        if (recipient.find()) return recipient.group(1);
         Matcher m = Pattern.compile("(?:交|提交|上传|发)到\\s*([^\\s，。；、]{2,8})").matcher(t);
         if (m.find()) return m.group(1);
         return null;
@@ -764,6 +813,7 @@ public class Engine {
     /** 去掉子句里的时间表达、称呼前缀、渠道后缀，供 findAction / 兜底标题共用。 */
     static String cleanTitle(String clause) {
         String s = clause == null ? "" : clause;
+        if (s.startsWith("[有全体消息]")) s = s.substring("[有全体消息]".length()).trim();
         // 时段词 + 钟点（含"半"）+ 可选后缀"之前/以前/前/截止"，整段一起删
         s = P_CLEAN_HOUR.matcher(s).replaceAll("");
         // hh:mm 前面同样可能带时段词，后面同样可能带"之前/前/截止"
@@ -790,6 +840,29 @@ public class Engine {
      * 时间表达、称呼前缀和渠道后缀。清理后太短时，退到第一个非空子句
      * （它通常是"作业：…习题"这种事项名，时间在后面的子句里）。
      */
+    static boolean deliveryOnly(String text) {
+        return text != null && cleanTitle(text).matches(
+                "(?:交|提交|上交|发|发送)(?:给|至)\\s*[\\p{IsHan}]{0,6}(?:组长|老师|助教|课代表|班长|辅导员|负责人)(?:处)?");
+    }
+
+    static boolean containsDelivery(String text) {
+        if (text == null) return false;
+        for (String clause : P_SPLIT.split(text)) if (deliveryOnly(clause)) return true;
+        return false;
+    }
+
+    static String deliverySubject(List<String> clauses, int before) {
+        for (int i = before - 1; i >= 0; i--) {
+            String candidate = clauses.get(i);
+            candidate = candidate.split("(?:请|务必|需|须|应)(?:于|在)", 2)[0];
+            candidate = cleanTitle(candidate).replaceFirst("^[^\\p{L}\\p{N}（(]+", "").trim();
+            if (containsAny(candidate, new String[]{"作业", "报告", "材料", "申请表", "登记表", "论文", "习题"})) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     static String[] findAction(String text) {
         if (text == null) return new String[]{null, null};
         List<String> clauses = new ArrayList<>();
@@ -810,6 +883,7 @@ public class Engine {
             break;
         }
         if (best == null) return new String[]{null, null};
+        if (deliveryOnly(best)) return new String[]{deliverySubject(clauses, bestI), verb};
         String s = cleanTitle(best);
         if (s.length() < 3) {
             // 前一个子句（第一个非空子句，且不是被选中的那个）同样清理后当标题
@@ -934,16 +1008,9 @@ public class Engine {
         // ---------- 重复推送去重 ----------
         // 同一群里若已有某张卡的原文（去空格后）与本条消息完全相同，说明是同一条消息
         // 被重复推送：直接丢弃，不出新卡、不更新已有卡、也不 remember。
-        // 只比较同群的卡：不同群同文字仍各出一张；卡被删掉后基线消失，再发可重新出卡。
+        // 可恢复的移除保留去重依据，防止同一通知重发后立即回到首页。
         String flatText = stripSpaces(t);
-        for (Card c : cards) {
-            if (c.sourceText == null) continue;                  // sourceText 可能为 null，判空跳过
-            boolean sameGroup = m.groupId == null
-                    ? c.groupId == null : m.groupId.equals(c.groupId);
-            if (!sameGroup) continue;
-            // 只认 30 分钟内的重复推送：隔很多天再发同一句话（如每周的"交周报"）是新通知
-            if (flatText.equals(stripSpaces(c.sourceText)) && Math.abs(m.ts - c.sourceTs) <= 30 * 60_000L) return;
-        }
+        if (isDuplicate(cards, m, flatText) || isDuplicate(removedCards, m, flatText)) return;
 
         Map<String, Double> f = featurize(m);
         int idx = argmax(scores(f));
@@ -988,7 +1055,8 @@ public class Engine {
                 if (d.ok()) {
                     target.deadline = d.value;
                     target.deadlineText = humanDeadline(d.value);
-                    target.needsConfirm = false;
+                    target.needsConfirm = "low".equals(d.conf);
+                    target.deadlineUserSet = false;
                     target.updated = true;
                     target.lastRevisionText = t;
                     notifyChanged();
@@ -1031,7 +1099,8 @@ public class Engine {
                 if (d.ok()) {
                     same.deadline = d.value;
                     same.deadlineText = humanDeadline(d.value);
-                    same.needsConfirm = false;
+                    same.needsConfirm = "low".equals(d.conf);
+                    same.deadlineUserSet = false;
                 }
                 notifyChanged();
                 remember(m);
@@ -1044,8 +1113,9 @@ public class Engine {
             c.jielongKey = jl[0];
             c.deadline = d.ok() ? d.value : 0;
             c.deadlineText = humanDeadline(c.deadline);
-            c.needsConfirm = c.deadline == 0;
+            c.needsConfirm = c.deadline == 0 || "low".equals(d.conf);
             c.channel = "群接龙";
+            c.sourcePackage = m.pkg;
             c.groupId = m.groupId;
             c.groupName = m.groupName;
             c.sender = m.sender;
@@ -1082,6 +1152,7 @@ public class Engine {
                 c.channel = findChannel(t);
                 c.place = findPlace(t);
                 c.bring = findBring(t);
+                c.sourcePackage = m.pkg;
                 c.groupId = m.groupId;
                 c.groupName = m.groupName;
                 c.sender = m.sender;
@@ -1128,12 +1199,14 @@ public class Engine {
         Card c = new Card();
         c.id = newCardId();
         c.kind = "todo";
-        c.title = act[0] != null ? act[0] : fallbackTitle(t);
+        boolean missingSubject = act[0] == null && containsDelivery(t);
+        c.title = missingSubject ? "待确认：提交事项" : act[0] != null ? act[0] : fallbackTitle(t);
         c.deadline = d.ok() ? d.value : 0;
         c.deadlineText = humanDeadline(c.deadline);
-        c.needsConfirm = !d.ok() || "low".equals(d.conf);
+        c.needsConfirm = missingSubject || !d.ok() || "low".equals(d.conf);
         c.channel = findChannel(t);
         c.place = findPlace(t);
+        c.sourcePackage = m.pkg;
         c.groupId = m.groupId;
         c.groupName = m.groupName;
         c.sender = m.sender;
@@ -1141,7 +1214,7 @@ public class Engine {
         c.sourceText = t;
         c.sourceTs = m.ts;
         c.confidence = 0.8;
-        c.reason = c.needsConfirm ? TIME_UNCERTAIN : "";
+        c.reason = missingSubject ? "原消息只写了提交对象，未说明要提交什么" : c.needsConfirm ? TIME_UNCERTAIN : "";
         c.context = new ArrayList<>(recent.getOrDefault(m.groupId, new ArrayList<>()));
         cards.add(c);
         remember(m);
@@ -1180,6 +1253,7 @@ public class Engine {
 
     /** 从考试词前取名称，略过通知开头的格式词。 */
     private static String examReference(String text, String hit) {
+        text = P_ATALL.matcher(text).replaceAll(" ");
         String reference = hit;
         for (String part : text.split("[，,。；;\\n！!？?：:]")) {
             int index = part.indexOf(hit);
@@ -1217,6 +1291,7 @@ public class Engine {
             Deadline deadline = parseDeadline(text.substring(start), m.ts);
             if (!deadline.ok()) return;
             target.deadline = deadline.value;
+            target.deadlineUserSet = false;
             target.deadlineText = humanDeadline(deadline.value);
             target.needsConfirm = "low".equals(deadline.conf);
             target.updated = true;
@@ -1246,12 +1321,13 @@ public class Engine {
 
     /** titleOnly 为真时只拿卡片标题对目标，不走"之前/刚才"指代兜底（自然改期词用，防调课通知误指）。 */
     Card revisionTarget(Msg m, String t, boolean titleOnly) {
+        t = P_ATALL.matcher(t).replaceAll(" ");
         String sender = m.sender == null ? "" : m.sender;
         String gid = m.groupId == null ? "" : m.groupId;
         boolean trusted = containsAny(sender, TEACHER_HINTS);
         boolean near = containsAny(t, REVISION_PRONOUN_NEAR);
         boolean far = containsAny(t, REVISION_PRONOUN_FAR);
-        List<String> keys = new ArrayList<>();
+        Set<String> keys = new HashSet<>();
         for (int i = 0; i + 1 < t.length(); i++) {
             char a = t.charAt(i), b = t.charAt(i + 1);
             if (a < 0x4E00 || a > 0x9FFF || b < 0x4E00 || b > 0x9FFF) continue;
@@ -1260,25 +1336,35 @@ public class Engine {
             for (String s : REVISION_STOP) if (s.equals(g)) { stop = true; break; }
             if (!stop) keys.add(g);
         }
+        Card best = null;
+        int bestScore = 0;
         for (int i = cards.size() - 1; i >= 0; i--) {
             Card c = cards.get(i);
             if (!gid.equals(c.groupId)) continue;
             if (!trusted && !sender.equals(c.sender)) continue;
-            String blob = (c.title == null ? "" : c.title) + (titleOnly || c.sourceText == null ? "" : c.sourceText);
-            boolean hit = false;
+            String blob = c.title == null ? "" : c.title;
+            int score = 0;
             for (String g : keys) {
-                if (blob.contains(g)) { hit = true; break; }
+                if (blob.contains(g)) score++;
             }
-            if (titleOnly) {
-                if (hit) return c;
-                continue;
+            if (score > bestScore) {
+                best = c;
+                bestScore = score;
             }
-            if (!hit && near) {                      // "刚才"类：30 分钟内
+        }
+        if (best != null) return best;
+        if (titleOnly) return null;
+        for (int i = cards.size() - 1; i >= 0; i--) {
+            Card c = cards.get(i);
+            if (!gid.equals(c.groupId) || (!trusted && !sender.equals(c.sender))) continue;
+            if (c.sourceText != null) {
+                for (String key : keys) if (c.sourceText.contains(key)) return c;
+            }
+            if (near) {                              // "刚才"类：30 分钟内
                 long dt = m.ts - c.sourceTs;
-                if (dt >= 0 && dt <= 30 * 60_000L) hit = true;
+                if (dt >= 0 && dt <= 30 * 60_000L) return c;
             }
-            if (!hit && far && sender.equals(c.sender)) hit = true;   // "之前"类：原发送者本人，不限时间
-            if (hit) return c;
+            if (far && sender.equals(c.sender)) return c;
         }
         return null;
     }
@@ -1308,11 +1394,13 @@ public class Engine {
         Card c = new Card();
         c.id = newCardId();
         c.kind = "todo";
-        c.title = act[0] != null ? act[0] : fallbackTitle(p.m.text);
+        boolean missingSubject = act[0] == null && containsDelivery(p.m.text);
+        c.title = missingSubject ? "待确认：提交事项" : act[0] != null ? act[0] : fallbackTitle(p.m.text);
         c.deadline = d.ok() ? d.value : 0;
         c.deadlineText = humanDeadline(c.deadline);
-        c.needsConfirm = !d.ok();
+        c.needsConfirm = missingSubject || !d.ok() || "low".equals(d.conf);
         c.channel = findChannel(p.m.text);
+        c.sourcePackage = p.m.pkg;
         c.groupId = p.m.groupId;
         c.groupName = p.m.groupName;
         c.sender = p.m.sender;
@@ -1320,7 +1408,7 @@ public class Engine {
         c.sourceText = p.m.text;
         c.sourceTs = p.m.ts;
         c.confidence = 0.62;
-        c.reason = "回复潮 " + p.burst + " 条确认回复，升为待办";
+        c.reason = missingSubject ? "原消息只写了提交对象，未说明要提交什么" : "回复潮 " + p.burst + " 条确认回复，升为待办";
         c.context = new ArrayList<>(recent.getOrDefault(p.m.groupId, new ArrayList<>()));
         cards.add(c);
         p.carded = true;
@@ -1365,15 +1453,51 @@ public class Engine {
         return 0.4;
     }
 
-    /** 手动输入的群使用独立编号，避免改期或撤销碰到来自真实通知的同名群。 */
-    public boolean importText(String group, String sender, String body, long sentAt) {
-        String name = group.trim();
-        String text = body.trim();
-        if (name.isEmpty() || text.isEmpty() || sentAt <= 0) return false;
-        String who = sender.trim();
-        process(new Msg("manual-" + UUID.randomUUID(), "manual|" + name, name,
-                who.isEmpty() ? "手动粘贴" : who, text, "manual", sentAt));
+    private static boolean isDuplicate(List<Card> source, Msg message, String flatText) {
+        for (Card card : source) {
+            // 先跳过其他群和窗口外的卡，避免为历史原文反复生成去空格字符串。
+            if (card.sourceText != null && Objects.equals(message.groupId, card.groupId)
+                    && Math.abs(message.ts - card.sourceTs) <= 30 * 60_000L
+                    && flatText.equals(stripSpaces(card.sourceText))) return true;
+        }
+        return false;
+    }
+
+    /** 移除误识别卡片，保留完整内容供用户恢复。 */
+    public boolean dismissCard(Card card, long now) {
+        if (card == null || now <= 0 || !cards.remove(card)) return false;
+        card.removedAt = now;
+        removedCards.add(card);
+        notifyChanged();
         return true;
+    }
+
+    public List<Card> removedCards() {
+        List<Card> result = new ArrayList<>(removedCards);
+        result.sort((a, b) -> Long.compare(b.removedAt, a.removedAt));
+        return result;
+    }
+
+    /** 已有更新的同题接龙时保留当前名单，避免恢复出两张提醒。 */
+    public boolean restoreCard(Card card) {
+        if (card == null || !removedCards.contains(card)) return false;
+        for (Card active : cards) {
+            if (card.id != null && card.id.equals(active.id)) return false;
+            if ("jielong".equals(card.kind) && "jielong".equals(active.kind)
+                    && Objects.equals(card.groupId, active.groupId)
+                    && Objects.equals(card.jielongKey, active.jielongKey)
+                    && (!blank(card.jielongKey) || Objects.equals(card.title, active.title))) return false;
+        }
+        removedCards.remove(card);
+        card.removedAt = 0;
+        cards.add(card);
+        notifyChanged();
+        return true;
+    }
+
+    public void clearRemovedCards() {
+        removedCards.clear();
+        notifyChanged();
     }
 
     /** null 保留当前时间，0 将时间标记为待确认。原始标题仍用于匹配群更正。 */
@@ -1382,6 +1506,7 @@ public class Engine {
         if (!cards.contains(card) || label.isEmpty() || (deadline != null && deadline < 0)) return false;
         card.titleOverride = label.equals(card.title) ? null : label;
         if (deadline != null) {
+            card.deadlineUserSet = true;
             card.deadline = deadline;
             card.deadlineText = humanDeadline(deadline);
             card.needsConfirm = deadline == 0;
@@ -1408,8 +1533,15 @@ public class Engine {
     }
 
     void notifyChanged() {
+        stateRevision++;
         if (listener != null) listener.onCardsChanged();
     }
+
+    public long stateRevision() { return stateRevision; }
+
+    public boolean hasStateChanges() { return stateRevision != savedRevision; }
+
+    public void markStateSaved(long revision) { savedRevision = revision; }
 
     // ---------- 落盘 ----------
     // 纯文本行格式，字段逐行 "key<TAB>值"，值里的反斜杠/换行/回车/制表符转义，
@@ -1424,8 +1556,10 @@ public class Engine {
         Writer w = new OutputStreamWriter(out, "UTF-8");
         w.write("NPL1\n");
         w.write("SEQ\t" + seq + "\n");
-        w.write("N\t" + cards.size() + "\n");
-        for (Card c : cards) {
+        List<Card> stored = new ArrayList<>(cards);
+        stored.addAll(removedCards);
+        w.write("N\t" + stored.size() + "\n");
+        for (Card c : stored) {
             w.write("CARD\n");
             w.write("id\t" + esc(c.id) + "\n");
             w.write("kind\t" + esc(c.kind) + "\n");
@@ -1434,11 +1568,13 @@ public class Engine {
             w.write("place\t" + esc(c.place) + "\n");
             w.write("bring\t" + esc(c.bring) + "\n");
             w.write("groupId\t" + esc(c.groupId) + "\n");
+            w.write("sourcePackage\t" + esc(c.sourcePackageName()) + "\n");
             w.write("groupName\t" + esc(c.groupName) + "\n");
             w.write("sender\t" + esc(c.sender) + "\n");
             w.write("sourceId\t" + esc(c.sourceId) + "\n");
             w.write("sourceText\t" + esc(c.sourceText) + "\n");
             w.write("deadlineText\t" + esc(c.deadlineText) + "\n");
+            w.write("deadlineUserSet\t" + (c.deadlineUserSet ? "1" : "0") + "\n");
             if (c.titleOverride != null) w.write("titleOverride\t" + esc(c.titleOverride) + "\n");
             if (c.lastRevisionText != null) w.write("lastRevisionText\t" + esc(c.lastRevisionText) + "\n");
             w.write("deadline\t" + c.deadline + "\n");
@@ -1447,6 +1583,7 @@ public class Engine {
             w.write("needsConfirm\t" + (c.needsConfirm ? "1" : "0") + "\n");
             w.write("updated\t" + (c.updated ? "1" : "0") + "\n");
             w.write("done\t" + (c.done ? "1" : "0") + "\n");
+            if (c.removedAt > 0) w.write("removedAt\t" + c.removedAt + "\n");
             w.write("confidence\t" + Double.toString(c.confidence) + "\n");
             w.write("reason\t" + esc(c.reason) + "\n");
             if (c.context == null) {
@@ -1465,6 +1602,9 @@ public class Engine {
         String line = br.readLine();
         if (line == null || !"NPL1".equals(line.trim())) {
             cards.clear();                       // 空文件 / 非本格式：当作没有卡片，不抛异常
+            removedCards.clear();
+            stateRevision++;
+            savedRevision = stateRevision;
             return;
         }
         List<Card> loaded = new ArrayList<>();
@@ -1487,11 +1627,13 @@ public class Engine {
             else if ("place".equals(key)) cur.place = unesc(val);
             else if ("bring".equals(key)) cur.bring = unesc(val);
             else if ("groupId".equals(key)) cur.groupId = unesc(val);
+            else if ("sourcePackage".equals(key)) cur.sourcePackage = unesc(val);
             else if ("groupName".equals(key)) cur.groupName = unesc(val);
             else if ("sender".equals(key)) cur.sender = unesc(val);
             else if ("sourceId".equals(key)) cur.sourceId = unesc(val);
             else if ("sourceText".equals(key)) cur.sourceText = unesc(val);
             else if ("deadlineText".equals(key)) cur.deadlineText = unesc(val);
+            else if ("deadlineUserSet".equals(key)) cur.deadlineUserSet = "1".equals(val.trim());
             else if ("titleOverride".equals(key)) cur.titleOverride = unesc(val);
             else if ("lastRevisionText".equals(key)) cur.lastRevisionText = unesc(val);
             else if ("deadline".equals(key)) cur.deadline = toLong(val, 0);
@@ -1500,6 +1642,7 @@ public class Engine {
             else if ("needsConfirm".equals(key)) cur.needsConfirm = "1".equals(val.trim());
             else if ("updated".equals(key)) cur.updated = "1".equals(val.trim());
             else if ("done".equals(key)) cur.done = "1".equals(val.trim());
+            else if ("removedAt".equals(key)) cur.removedAt = Math.max(0, toLong(val, 0));
             else if ("confidence".equals(key)) cur.confidence = toDouble(val, 0);
             else if ("reason".equals(key)) cur.reason = unesc(val);
             else if ("CTXN".equals(key)) {
@@ -1511,9 +1654,32 @@ public class Engine {
             }
         }
         cards.clear();
-        cards.addAll(loaded);
+        removedCards.clear();
         if (loadedSeq > seq) seq = loadedSeq;
+        boolean repairedTitle = false;
         for (Card c : loaded) {                  // 兜底：老数据里的编号也不能被撞
+            if ("todo".equals(c.kind) && deliveryOnly(c.title) && !blank(c.sourceText)) {
+                String[] corrected = findAction(c.sourceText);
+                c.title = corrected[0] == null ? "待确认：提交事项" : corrected[0];
+                if (blank(c.channel)) c.channel = findChannel(c.sourceText);
+                if (corrected[0] == null) {
+                    c.needsConfirm = true;
+                    c.reason = "原消息只写了提交对象，未说明要提交什么";
+                }
+                repairedTitle = true;
+            }
+            if (c.deadlineHint() != null && !c.needsConfirm) {
+                String originalTime = blank(c.lastRevisionText) ? c.sourceText : c.lastRevisionText;
+                Deadline parsed = parseDeadline(originalTime, c.sourceTs);
+                if (c.deadline == parsed.value) {
+                    c.needsConfirm = true;
+                    c.reason = "原文只说明下课或放学前，具体时刻待确认";
+                } else c.deadlineUserSet = true;
+                repairedTitle = true;
+            }
+            if (blank(c.sourcePackage)) c.sourcePackage = c.sourcePackageName();
+            if (c.removedAt > 0) removedCards.add(c);
+            else cards.add(c);
             long n = idNumber(c.id);
             if (n > seq) seq = n;
             if ("exam".equals(c.kind)) {
@@ -1521,6 +1687,8 @@ public class Engine {
                 if (hit != null) c.title = examTitle(c.sourceText, hit);
             }
         }
+        stateRevision++;
+        savedRevision = repairedTitle ? stateRevision - 1 : stateRevision;
     }
 
     static long idNumber(String id) {
@@ -1596,14 +1764,22 @@ public class Engine {
     }
 
     public enum CardScope { ALL, OPEN, OVERDUE, COMPLETED }
+    public enum CardWindow { ANY, TODAY, TOMORROW, NEEDS_CONFIRM }
 
     public List<Card> queryCards(String keywords, CardScope scope, int limit, long now) {
+        return queryCards(keywords, scope, CardWindow.ANY, limit, now);
+    }
+
+    public List<Card> queryCards(String keywords, CardScope scope, CardWindow window, int limit, long now) {
         List<Card> result = new ArrayList<>();
         if (limit <= 0) return result;
         String normalized = keywords == null ? "" : keywords.trim().toLowerCase(Locale.ROOT);
         String[] terms = normalized.isEmpty() ? new String[0] : normalized.split("\\s+");
+        TimeZone zone = TimeZone.getDefault();
+        long today = Math.floorDiv(now, 86400000L)
+                + Math.floorDiv(Math.floorMod(now, 86400000L) + zone.getOffset(now), 86400000L);
         for (Card card : cards) {
-            if (matchesScope(card, scope, now) && matchesTerms(card, terms)) result.add(card);
+            if (matchesScope(card, scope, now) && matchesWindow(card, window, today, zone) && matchesTerms(card, terms)) result.add(card);
         }
         return rankCards(result, limit, now);
     }
@@ -1617,16 +1793,32 @@ public class Engine {
         }
     }
 
+    private static boolean matchesWindow(Card card, CardWindow window, long today, TimeZone zone) {
+        if (window == CardWindow.ANY) return true;
+        if (card.done) return false;
+        if (window == CardWindow.NEEDS_CONFIRM) return card.needsConfirm || card.deadline == 0;
+        if (card.needsConfirm || card.deadline == 0) return false;
+        long day = Math.floorDiv(card.deadline, 86400000L)
+                + Math.floorDiv(Math.floorMod(card.deadline, 86400000L) + zone.getOffset(card.deadline), 86400000L);
+        return day - today == (window == CardWindow.TODAY ? 0 : 1);
+    }
+
     private static boolean matchesTerms(Card card, String[] terms) {
         if (terms.length == 0) return true;
-        StringBuilder fields = new StringBuilder();
-        for (String value : new String[]{card.displayTitle(), card.title, card.groupName,
-                card.sender, card.channel, card.place}) {
-            if (value != null) fields.append(value).append('\n');
+        String[] fields = {card.displayTitle(), card.titleOverride == null ? null : card.title,
+                card.groupName, card.sender, card.channel, card.place, card.sourceAppName()};
+        for (int i = 0; i < fields.length; i++) {
+            if (fields[i] != null) fields[i] = fields[i].toLowerCase(Locale.ROOT);
         }
-        String searchable = fields.toString().toLowerCase(Locale.ROOT);
         for (String term : terms) {
-            if (!searchable.contains(term)) return false;
+            boolean found = false;
+            for (String field : fields) {
+                if (field != null && field.contains(term)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
         }
         return true;
     }
@@ -1654,6 +1846,7 @@ public class Engine {
 
     public void clearLocalData() {
         cards.clear();
+        removedCards.clear();
         candidates.clear();
         senderStat.clear();
         recent.clear();

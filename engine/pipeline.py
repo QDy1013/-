@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import jielong as jl
-from .extract import Extracted, clean_title, extract, find_action, human_deadline
+from .extract import Extracted, clean_title, extract, find_action, human_deadline, is_delivery_only, RE_SPLIT
 from .features import MANUAL_KEYS, Stats, is_noise, vectorize
 from .timeparse import parse_deadline
 
@@ -82,7 +82,7 @@ REVISION_PRONOUN_NEAR = ("刚才", "刚刚", "那条")
 # "之前"类指代词：原发送者本人说时，取此人在本群最新的一张卡，不限时间
 REVISION_PRONOUN_FAR = ("之前", "上条", "上面", "前面")
 
-AT_ALL_RE = re.compile(r"@\s*所有人|@\s*全体")
+AT_ALL_RE = re.compile(r"@\s*所有人|@\s*全体|\[有全体消息\]")
 
 ACTION, NOTICE, DISCUSSION, CHATTER = "action", "notice", "discussion", "chatter"
 
@@ -522,7 +522,7 @@ class Pipeline:
                 self._remember(msg)
                 return produced
 
-            action = e.action or self._fallback_title(text)
+            action = e.action or ("待确认：提交事项" if any(is_delivery_only(c) for c in RE_SPLIT.split(text)) else self._fallback_title(text))
             card = Card(
                 card_id=f"c{len(self.cards) + 1:04d}",
                 kind="todo",
@@ -593,7 +593,7 @@ class Pipeline:
         card = Card(
             card_id=f"c{len(self.cards) + 1:04d}",
             kind="todo",
-            title=e.action or self._fallback_title(msg["text"]),
+            title=e.action or ("待确认：提交事项" if any(is_delivery_only(c) for c in RE_SPLIT.split(msg["text"])) else self._fallback_title(msg["text"])),
             deadline=e.deadline,
             needs_confirm=e.needs_confirm,
             channel=e.channel,
@@ -676,7 +676,7 @@ class Pipeline:
         if self._exam_asking(text) or text.strip().startswith(EXAM_ASK_PREFIX):
             return None
         reference = hit
-        for part in EXAM_REFERENCE_SPLIT.split(text):
+        for part in EXAM_REFERENCE_SPLIT.split(AT_ALL_RE.sub(" ", text)):
             index = part.find(hit)
             if index < 0:
                 continue
@@ -714,12 +714,13 @@ class Pipeline:
         不限时间，取此人在本群最新的一张卡。
         """
         sender = msg.get("sender") or ""
+        text = AT_ALL_RE.sub(" ", text)
         gid = msg.get("group_id") or ""
         ts = msg["ts"] if isinstance(msg["ts"], datetime) else datetime.fromisoformat(msg["ts"])
         trusted = any(h in sender for h in self.TEACHER_HINTS)
         near = any(p in text for p in REVISION_PRONOUN_NEAR)
         far = any(p in text for p in REVISION_PRONOUN_FAR)
-        keys: list[str] = []
+        keys: set[str] = set()
         for i in range(len(text) - 1):
             a, b = text[i], text[i + 1]
             if not ("\u4e00" <= a <= "\u9fff" and "\u4e00" <= b <= "\u9fff"):
@@ -727,7 +728,9 @@ class Pipeline:
             g = text[i:i + 2]
             if g in REVISION_STOP:
                 continue
-            keys.append(g)
+            keys.add(g)
+        best = None
+        best_score = 0
         for c in reversed(self.cards):
             if c.group_id != gid:
                 continue
@@ -737,20 +740,24 @@ class Pipeline:
                 continue
             # 自然改期词（改到/挪到/延期…）容易撞上调课通知，只拿卡片标题来对，
             # 也不走"之前/刚才"这类指代兜底；原来的更正词仍按标题加原文匹配。
-            blob = (c.title or "") if title_only else (c.title or "") + (c.source_text or "")
-            hit = any(g in blob for g in keys)
-            if title_only:
-                if hit:
-                    return c
+            blob = c.title or ""
+            score = sum(g in blob for g in keys)
+            if score > best_score:
+                best, best_score = c, score
+        if best is not None:
+            return best
+        if title_only:
+            return None
+        for c in reversed(self.cards):
+            if c.group_id != gid or c.revoked or (not trusted and sender != c.sender):
                 continue
-            if not hit and far and sender == c.sender:
-                # 原发送者本人说"之前/上条"，不限时间：本群此人最新的一张卡就是目标
-                hit = True
-            if not hit and near:
+            if any(key in (c.source_text or "") for key in keys):
+                return c
+            if near:
                 dt = (ts - c.sent_at).total_seconds()
                 if 0 <= dt <= 30 * 60:
-                    hit = True
-            if hit:
+                    return c
+            if far and sender == c.sender:
                 return c
         return None
 

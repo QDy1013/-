@@ -177,7 +177,8 @@ public class NotifListener extends NotificationListenerService {
                 // 正文。
                 String body = p.body;
                 // 优先用消息自带的发送时间，没有就退回这条通知的发布时间。
-                long sentAt = p.time > 0 ? p.time : System.currentTimeMillis();
+                long sentAt = p.time > 0 ? p.time : sbn.getPostTime();
+                if (sentAt <= 0) sentAt = System.currentTimeMillis();
                 // 消息编号：同一群同一发送者同一正文同一时间视为同一条，避免重复出卡。
                 String id = "n" + group.hashCode() + "_"
                         + (p.sender + "|" + p.body).hashCode() + "_"
@@ -194,7 +195,9 @@ public class NotifListener extends NotificationListenerService {
             // 立刻把这两个值落盘，App 被系统杀掉重启后界面仍能显示"最近一次自动收到"。
             EngineHolder.persistLast(this);
             // 一次通知只存一次盘，不按消息条数重复写。
-            EngineHolder.save(this);
+            if (!EngineHolder.saveIfChanged(this)) {
+                EngineHolder.diag(this, "出错", "卡片保存失败，等待下次通知重试");
+            }
 
             // 全部处理成功才记"收到"，detail 写群名和条数，方便肉眼核对。
             EngineHolder.diag(this, "收到", group + " · " + parsed.size() + "条");

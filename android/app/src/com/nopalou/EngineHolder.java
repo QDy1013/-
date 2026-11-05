@@ -168,12 +168,13 @@ public class EngineHolder {
     }
 
     /** 写入成功后提交新存档，出错时由 AtomicFile 保留上一次存档。 */
-    public static synchronized void save(Context ctx) {
-        if (engine == null || ctx == null) return;
+    public static synchronized boolean save(Context ctx) {
+        if (engine == null || ctx == null) return false;
         Context app = ctx.getApplicationContext();
         if (app == null) app = ctx;
 
         AtomicFile file = new AtomicFile(new File(app.getFilesDir(), FILE_NAME));
+        long revision = engine.stateRevision();
         FileOutputStream out = null;
         try {
             out = file.startWrite();
@@ -182,8 +183,21 @@ public class EngineHolder {
         } catch (Exception ex) {
             if (out != null) file.failWrite(out);
             Log.w(TAG, "保存卡片失败", ex);
-            return;
+            return false;
         }
-        ReminderReceiver.refresh(app, engine);
+        engine.markStateSaved(revision);
+        try {
+            ReminderReceiver.refresh(app, engine);
+        } catch (RuntimeException ex) {
+            Log.w(TAG, "卡片已保存，提醒调度失败", ex);
+            diag(app, "出错", "到期提醒调度失败");
+        }
+        return true;
+    }
+
+    /** 自动通知只有改变卡片时才写盘。失败后的脏状态保留，下次通知会再次尝试。 */
+    public static synchronized boolean saveIfChanged(Context ctx) {
+        if (engine == null || ctx == null) return false;
+        return !engine.hasStateChanges() || save(ctx);
     }
 }

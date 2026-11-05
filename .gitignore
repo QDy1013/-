@@ -6,3 +6,10 @@ android/build/test/
 android/build/*.idsig
 android/build/debug.keystore
 android/build/test_out.txt
+
+# 构建中间产物与签名文件
+android/build/
+*.jks
+*.keystore
+.env
+.env.*

@@ -1,8 +1,16 @@
 package com.nopalou;
 
 import android.content.Context;
+import android.content.res.ColorStateList;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
+import android.graphics.Paint;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -21,42 +29,48 @@ final class Ui {
     }
 
     // ---------- 色板 ----------
+    static final int HERO = Color.parseColor("#00000000");
+    static final int HERO_SUB = Color.parseColor("#718093");
+    static final int HERO_TEXT = Color.parseColor("#57677A");
+    static final int HERO_STATUS = Color.parseColor("#52748E");
 
     // 页面底色：极浅冷灰，比纯白略暗，让白色卡片能浮起来
-    static final int BG = Color.parseColor("#F5F6F8");
+    static final int BG = Color.parseColor("#F5F7FA");
     // 卡片/面板底色：纯白，作为内容的主要承载面
     static final int CARD = Color.parseColor("#FFFFFF");
     // 分割线：比背景略深的冷灰，只做结构提示，不抢视线
-    static final int LINE = Color.parseColor("#EEF0F3");
-    // 主文字色：近黑，用于标题与关键数字
-    static final int TEXT = Color.parseColor("#1B1D21");
-    // 次级文字色：中性灰，用于说明文字与副标题
-    static final int SUB = Color.parseColor("#868D99");
+    static final int LINE = Color.parseColor("#E0E6ED");
+    // 主文字色：深墨，用于标题与关键信息
+    static final int TEXT = Color.parseColor("#17212D");
+    // 次级文字色：中性灰，用于说明文字与副标题（白底对比约 5:1）
+    static final int SUB = Color.parseColor("#66778A");
     // 弱化文字色：更浅的灰，用于来源、脚注等最次要信息
-    static final int MUTE = Color.parseColor("#B4BAC4");
-    // 主强调色：品牌蓝，用于主按钮与信息态
-    static final int BLUE = Color.parseColor("#3F6FF6");
+    static final int MUTE = Color.parseColor("#718093");
+    // 主强调色：靛蓝，用于主按钮、来源标签与信息态
+    static final int BLUE = Color.parseColor("#315F88");
     // 高危强调色：克制的红，用于逾期与高紧急度
     static final int RED = Color.parseColor("#E5484D");
     // 中等强调色：暖橙，用于临近截止
-    static final int ORANGE = Color.parseColor("#F08A24");
+    static final int ORANGE = Color.parseColor("#D97A16");
     // 成功/完成色：低饱和绿，用于已完成状态
-    static final int GREEN = Color.parseColor("#2FAF7B");
+    static final int GREEN = Color.parseColor("#1E9E6A");
     // 琥珀色浅底：提醒类标签的背景
-    static final int AMBER_BG = Color.parseColor("#FFF4E5");
+    static final int AMBER_BG = Color.parseColor("#EFF5FC");
     // 琥珀色文字：与 AMBER_BG 配套，保证浅底上的可读性
-    static final int AMBER_TX = Color.parseColor("#9A5B13");
+    static final int AMBER_TX = Color.parseColor("#315F88");
     // 蓝色浅底：信息类标签/区域的背景
-    static final int BLUE_BG = Color.parseColor("#EAF0FF");
+    static final int BLUE_BG = Color.parseColor("#DDEFFD");
     // 橙色浅底：待确认类标签的背景
     static final int ORANGE_BG = Color.parseColor("#FFF1DF");
+    // 引文底色：详情页原文面板，比页面底略灰一点
+    static final int QUOTE = Color.parseColor("#F7F8FA");
 
     // ---------- 兼容旧名（统一指向新色板，避免调用方改动） ----------
 
     // 旧「卡片底色」→ 新卡片色
     static final int SURFACE = CARD;
     // 旧「次级面板底色」：比卡片略灰一点，用于按钮等次级容器
-    static final int SURFACE2 = Color.parseColor("#F1F3F6");
+    static final int SURFACE2 = Color.parseColor("#EFF4F9");
     // 旧「描边色」→ 新分割线色
     static final int STROKE = LINE;
     // 旧「低紧急度强调色」→ 新品牌蓝（浅色风格下绿色留给"完成"语义）
@@ -214,5 +228,94 @@ final class Ui {
         g.setShape(GradientDrawable.OVAL);
         g.setColor(color);
         return g;
+    }
+
+    /**
+     * 同色系加深：深色小字压在浅色胶囊上时保证对比，不另起一套色板。
+     */
+    static int deep(int color) {
+        float f = 0.72f;
+        return Color.rgb((int) (Color.red(color) * f),
+                (int) (Color.green(color) * f), (int) (Color.blue(color) * f));
+    }
+
+    /**
+     * 原生水波纹：content 是常态背景（可为 null），rippleColor 是按压色。
+     * radiusDp 用圆角遮罩裁切，避免方形水波溢到圆角按钮外面。
+     */
+    static Drawable ripple(Context c, Drawable content, int rippleColor, float radiusDp) {
+        GradientDrawable mask = new GradientDrawable();
+        mask.setCornerRadius(MainActivity.dp(c, radiusDp));
+        mask.setColor(Color.WHITE);
+        return new RippleDrawable(ColorStateList.valueOf(rippleColor), content, mask);
+    }
+
+    /**
+     * 圆形水波纹：用于完成圈这类小圆点控件，点击范围由视图自身决定。
+     */
+    static Drawable rippleCircle(Context c, int rippleColor) {
+        GradientDrawable mask = new GradientDrawable();
+        mask.setShape(GradientDrawable.OVAL);
+        mask.setColor(Color.WHITE);
+        return new RippleDrawable(ColorStateList.valueOf(rippleColor), null, mask);
+    }
+
+    /**
+     * 矢量放大镜：避免引入图片资源，随字号缩放，颜色跟主题走。
+     */
+    static Drawable searchGlyph(Context c, int color, float sizeDp) {
+        return new SearchGlyph(MainActivity.dp(c, sizeDp), color);
+    }
+
+    /** 纯 Canvas 绘制的放大镜，无外部资源依赖。 */
+    private static final class SearchGlyph extends Drawable {
+        private final int size;
+        private final Paint paint;
+
+        SearchGlyph(int size, int color) {
+            this.size = Math.max(1, size);
+            paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            paint.setColor(color);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(1f, size * 0.095f));
+            paint.setStrokeCap(Paint.Cap.ROUND);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            float side = Math.min(b.width(), b.height());
+            float cx = b.left + side * 0.43f;
+            float cy = b.top + side * 0.43f;
+            float r = side * 0.27f;
+            canvas.drawCircle(cx, cy, r, paint);
+            canvas.drawLine(cx + r * 0.72f, cy + r * 0.72f,
+                    b.left + side * 0.85f, b.top + side * 0.85f, paint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(ColorFilter cf) {
+            paint.setColorFilter(cf);
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return size;
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return size;
+        }
     }
 }

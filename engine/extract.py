@@ -20,6 +20,56 @@ RE_SPLIT = re.compile(r"[，。；;\n！!？?]")
 VERBS = ("交", "提交", "上传", "传", "填", "报名", "签到", "接龙", "回复", "领取", "打卡",
          "参加", "完成", "补交", "缴费", "选课", "下载")
 
+# ---- 纯收件人子句（"交给组长"这类只有动作 + 收件人的子句）----
+TITLE_NOUNS = ("作业", "报告", "材料", "申请表", "登记表", "论文", "习题")
+RECIPIENTS = ("课代表", "助教", "辅导员", "班主任", "负责人", "组长", "学委", "班长", "老师", "导员")
+RE_DELIVERY_ONLY = re.compile(
+    r"^(?:请|麻烦|大家|同学们|各位同学|各位|记得|务必|注意|统一|直接|按时|及时|都|先|再)?\s*"
+    r"(?:提交|上交|上缴|转交|交|发)\s*(?:给|到|于)\s*"
+    r"(?:各|本组|我们组|你们组)?\s*"
+    r"(?:" + "|".join(RECIPIENTS) + r")"
+    r"(?:老师|同学|那里|那儿|处)?\s*[。！!，,；;.\s]*$")
+# 收件人提交渠道：交给组长 / 提交给课代表 / 上交给助教
+RE_DELIVERY_CHANNEL = re.compile(
+    r"(?:交给|交到|提交给|提交到|上交给|上交到|上缴给|转交给|交|提交|上交|上缴|发给)\s*"
+    r"(?:各|本组|我们组|你们组)?\s*"
+    r"(" + "|".join(RECIPIENTS) + r")")
+# 标题后面跟着的时间要求，从"请于/须于/需在/务必在"等处截断
+_TIME_AHEAD = (r"(?:\d{1,2}\s*[月./]|下?周[一二三四五六日天]|星期[一二三四五六日天]"
+               r"|今天|明天|后天|今晚|明晚|今早|明早|本(?:周|月|学期)|这(?:周|月|学期)"
+               r"|月底|月末|周末|\d{1,2}\s*[点时]|[上下]午|晚上|中午|早上)")
+RE_DELIVERY_CUT = re.compile(
+    r"(?:请务必|务必|请于|须于|需在|需要在|须在|必须于|必须|请|须|需|截止到|截止|限"
+    r"|(?<![关对由属至])于)\s*"
+    r"(?:在|于|到)?\s*(?=" + _TIME_AHEAD + r")")
+# 句首的 📢 类符号（不影响中文/括号）
+RE_LEAD_SYMBOL = re.compile(
+    r"^[\s\u200b\u200c\u200d\ufe0e\ufe0f\u2049\u203c\u2600-\u27bf\u2b00-\u2bff"
+    r"\U0001F000-\U0001FAFF]+")
+
+
+def is_delivery_only(text: str) -> bool:
+    """判断子句是否只是"交给组长"这类纯收件人提交短语。
+
+    "交给组长的实验报告"带有事项中心词，不算纯收件人子句。
+    """
+    return bool(RE_DELIVERY_ONLY.match(clean_title(text)))
+
+
+def _title_from_clause(clause: str) -> str:
+    """从子句里取事项标题：去掉开头符号，截断后续时间要求，保留序号和章节括号。"""
+    s = clause.strip()
+    if s.startswith("[有全体消息]"):
+        s = s[len("[有全体消息]"):].strip()
+    s = RE_LEAD_SYMBOL.sub("", s)
+    m = RE_DELIVERY_CUT.search(s)
+    if m:
+        s = s[:m.start()]
+    s = clean_title(s)
+    s = re.sub(r"[（(]\s*[）)]", "", s)
+    s = re.sub(r"^[，,、；;：:\s]+|[，,、；;：:\s]+$", "", s)
+    return s.strip()
+
 # ---- 标题清理用的公共正则（find_action 与 pipeline 的兜底标题共用）----
 # 时段词集合里补了单字"早""晚"，但它们必须紧跟数字 + 点/时才删，
 # 所以整段写成「时段词? 数字 点/时」，不会误删"早自习"。
@@ -51,6 +101,8 @@ RE_TITLE_PREFIX = re.compile(
 def clean_title(clause: str) -> str:
     """去掉子句里的时间表达、称呼前缀、渠道后缀，供 find_action / 兜底标题共用。"""
     s = clause
+    if s.startswith("[有全体消息]"):
+        s = s[len("[有全体消息]"):].strip()
     # 时段词 + 钟点（含"半"）+ 可选后缀"之前/以前/前/截止"，整段一起删
     s = RE_TITLE_HOUR.sub("", s)
     # hh:mm 前面同样可能带时段词，后面同样可能带"之前/前/截止"
@@ -98,6 +150,9 @@ def find_channel(text: str) -> str | None:
     for c in CHANNELS:
         if c in text:
             return c
+    m = RE_DELIVERY_CHANNEL.search(text)
+    if m:
+        return m.group(1)
     m = re.search(r"(?:交|提交|上传|发)到\s*([^\s，。；、]{2,8})", text)
     if m:
         return m.group(1)
@@ -132,6 +187,14 @@ def find_action(text: str) -> tuple[str | None, str | None]:
         break
     if best is None:
         return None, None
+
+    # 选中"交给组长"这类纯收件人子句：回头找带事项中心词的前句当标题
+    if is_delivery_only(best):
+        for clause in reversed(clauses[:best_i]):
+            title = _title_from_clause(clause)
+            if title and any(n in title for n in TITLE_NOUNS):
+                return title, verb
+        return None, verb
 
     s = clean_title(best)
     if len(s) < 3:

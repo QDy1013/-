@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">不爬楼</string>
-    <string name="acc_desc">只在你点「读当前群」时读取屏幕上可见的文字，用于补全免打扰群和接龙全文。消息不离开手机。</string>
 </resources>

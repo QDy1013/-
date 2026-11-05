@@ -2,6 +2,7 @@ package com.nopalou;
 
 import java.util.Calendar;
 import java.util.List;
+import java.util.TimeZone;
 
 /** 今日视图的纯逻辑：分组、倒计时、紧急程度和顶部一句话。 */
 final class TodayView {
@@ -21,6 +22,12 @@ final class TodayView {
 
     /** 按规则顺序判断卡片属于哪个分组。 */
     static String bucket(long deadline, boolean needsConfirm, boolean done, long now) {
+        TimeZone zone = TimeZone.getDefault();
+        return bucket(deadline, needsConfirm, done, now, localDay(now, zone), zone);
+    }
+
+    private static String bucket(long deadline, boolean needsConfirm, boolean done, long now,
+                                 long today, TimeZone zone) {
         // 已完成优先于其他所有状态。
         if (done) return "已完成";
         // 需要确认，或者没有截止时间，都归入待确认。
@@ -28,7 +35,7 @@ final class TodayView {
         // 截止时刻已到或已过，属于已过期。
         if (deadline <= now) return "已过期";
         // 计算 deadline 比 now 晚几个自然日。
-        int days = daysBetween(now, deadline);
+        long days = localDay(deadline, zone) - today;
         // 同一个自然日归入今天。
         if (days == 0) return "今天";
         // 下一个自然日归入明天。
@@ -64,7 +71,7 @@ final class TodayView {
         // 不到 24 小时按小时报，向下取整。
         if (diff < DAY_MS) return "还剩" + (diff / HOUR_MS) + "小时";
         // 超过 24 小时改用自然日描述。
-        int days = daysBetween(now, deadline);
+        long days = daysBetween(now, deadline);
         // 下一个自然日显示具体时刻。
         if (days <= 1) return "明天 " + hhmm(deadline);
         // 下两个自然日显示具体时刻。
@@ -91,6 +98,8 @@ final class TodayView {
 
     /** 生成顶部一句话，只统计未完成的卡片。 */
     static String summary(List<Engine.Card> cards, long now) {
+        TimeZone zone = TimeZone.getDefault();
+        long todayDay = localDay(now, zone);
         // 分别统计今天、明天、已过期、待确认的未完成卡片数量。
         int today = 0;
         int tomorrow = 0;
@@ -104,7 +113,7 @@ final class TodayView {
             // 累加未完成数量。
             unfinished++;
             // 用统一的分组规则判断归属。
-            String bucket = bucket(card.deadline, card.needsConfirm, false, now);
+            String bucket = bucket(card.deadline, card.needsConfirm, false, now, todayDay, zone);
             if ("今天".equals(bucket)) {
                 // 今天的卡片计数。
                 today++;
@@ -135,39 +144,20 @@ final class TodayView {
         return sb.toString();
     }
 
-    /** 把时刻归零到本地时区的当天 00:00。 */
-    private static Calendar midnight(long time) {
-        // 取本地时区的日历实例。
-        Calendar c = Calendar.getInstance();
-        // 设置目标时刻。
-        c.setTimeInMillis(time);
-        // 时分秒和毫秒全部归零。
-        c.set(Calendar.HOUR_OF_DAY, 0);
-        c.set(Calendar.MINUTE, 0);
-        c.set(Calendar.SECOND, 0);
-        c.set(Calendar.MILLISECOND, 0);
-        return c;
+    /** 各自时刻的时区偏移参与计算，夏令时的 23/25 小时不会变成错误日期。 */
+    private static long localDay(long time, TimeZone zone) {
+        // 先拆成整天和余数，避免 time + offset 在极端时间戳处溢出。
+        return Math.floorDiv(time, DAY_MS)
+                + Math.floorDiv(Math.floorMod(time, DAY_MS) + zone.getOffset(time), DAY_MS);
     }
 
     /**
      * 计算两个时刻相隔的自然日数，to 晚于 from 为正数。
-     * 先归零到当天 00:00，再用 Calendar 逐日相加，避免夏令时造成的 23/25 小时误差。
+     * 直接比较本地日期的日序号，成本不随两日期之间的天数增长。
      */
-    private static int daysBetween(long from, long to) {
-        // 同一天直接返回 0。
-        if (from == to) return 0;
-        // 反向区间取负，保证下面始终按“从前向后”累加。
-        boolean negative = to < from;
-        Calendar start = midnight(negative ? to : from);
-        Calendar end = midnight(negative ? from : to);
-        // 记录跨越的自然日数量。
-        int days = 0;
-        while (start.before(end)) {
-            // 按日历字段加一天，跨月跨年由 Calendar 处理。
-            start.add(Calendar.DAY_OF_MONTH, 1);
-            days++;
-        }
-        return negative ? -days : days;
+    private static long daysBetween(long from, long to) {
+        TimeZone zone = TimeZone.getDefault();
+        return localDay(to, zone) - localDay(from, zone);
     }
 
     /** 按本地时区格式化为 HH:mm。 */

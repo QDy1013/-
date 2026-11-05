@@ -303,6 +303,8 @@ def parse_deadline(text: str, send: datetime) -> TimeParse:
     if not has_time:
         cand = datetime.combine(base, time(23, 59))
         expired = cand < send
+        if "下课前" in t or "放学前" in t:
+            return TimeParse(cand, False, "low", note="下课或放学前，具体时刻待确认", expired=expired)
         return TimeParse(cand, False, "medium" if date_conf != "high" else "high",
                          note=(note + " · 无具体时刻，按当日 23:59").strip(" ·"),
                          expired=expired)

@@ -90,6 +90,12 @@ public final class NotifParser {
         String cleaned = clean(text);
         // 正文清洗后为空，说明通知里没有可展示的内容。
         if (cleaned.isEmpty()) return result;
+        String hint = "";
+        if (cleaned.startsWith("[有全体消息]")) {
+            cleaned = cleaned.substring("[有全体消息]".length()).trim();
+            hint = "[有全体消息] ";
+            if (cleaned.isEmpty() || isPlaceholder(cleaned) || isCounter(cleaned)) return result;
+        }
         // 在清洗后的正文里找发送者分隔符。
         int sep = NotifFilter.senderSeparator(cleaned);
         if (sep >= 0) {
@@ -102,13 +108,13 @@ public final class NotifParser {
             // 发送者解析后为空时用默认名称，避免出现空字符串。
             if (sender.isEmpty()) sender = FALLBACK_SENDER;
             // 单条消息不知道时间，统一取 0。
-            result.add(new Parsed(sender, body, 0L));
+            result.add(new Parsed(sender, hint + body, 0L));
             return result;
         }
         // 找不到分隔符：title 为空时说明来源不明，用“群消息”。
         String sender = trimmed(title).isEmpty() ? GROUP_SENDER : FALLBACK_SENDER;
         // 整段清洗后的文本就是正文。
-        result.add(new Parsed(sender, cleaned, 0L));
+        result.add(new Parsed(sender, hint + cleaned, 0L));
         // 返回只有一条的列表。
         return result;
     }

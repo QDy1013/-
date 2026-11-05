@@ -44,7 +44,10 @@ public class TriggerReceiver extends BroadcastReceiver {
         if (context == null || intent == null) return;
         String action = intent.getAction();
 
-        if (ACTION_FORMAT.equals(action)) {
+        if ("com.nopalou.replay.AUTOMATIC".equals(action)) {
+            AutomaticFlow.post(context, intent.getIntExtra("stage", 0));
+            Log.i(TAG, "自动识别验收通知已发出");
+        } else if (ACTION_FORMAT.equals(action)) {
             // 原来的一次性触发：立刻发通知，行为保持不变，只是补一条日志。
             FormatNotifs.post(context);
             Log.i(TAG, "格式测试通知已发出");
