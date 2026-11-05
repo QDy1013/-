@@ -793,6 +793,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         menuSection(body, "事项");
         menuRow(body, holder, "到期提醒", ReminderReceiver.isEnabled(this) ? "已开启 · 到期前两小时提醒" : "已关闭",
                 Ui.TEXT, this::showDeadlineReminderSettings);
+        menuRow(body, holder, "按群管理", groupMenuHint(), Ui.TEXT, this::showGroupManager);
         menuRow(body, holder, "已移除的卡片", "误删的卡片可以在这里恢复", Ui.TEXT, this::showRemovedCards);
         menuRow(body, holder, "我的档案", "姓名、班级、课程，只存在本机", Ui.TEXT,
                 () -> startActivity(new Intent(this, ProfileActivity.class)));
@@ -1380,8 +1381,17 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
     /** 来源小图标：应用真实图标优先，取不到用品牌色文字徽标。 */
     View sourceMark(Engine.Card c, float sizeDp) {
-        String name = sourceName(c);
-        String pkg = c.sourcePackageName();
+        return sourceMark(sourceName(c), c.sourcePackageName(), sizeDp);
+    }
+
+    /** 包名对应的来源名称（与卡片上的显示一致）。 */
+    String appNameFor(String pkg) {
+        Engine.Card probe = new Engine.Card();
+        probe.sourcePackage = pkg;
+        return sourceName(probe);
+    }
+
+    View sourceMark(String name, String pkg, float sizeDp) {
         pkg = pkg == null ? "" : pkg.trim();
         int size = dp(this, sizeDp);
         Drawable icon = sourceIcon(pkg);
@@ -1650,8 +1660,22 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                     }
                 }).show());
         LinearLayout.LayoutParams rmLp = lp(-2, dp(this, 44));
-        rmLp.leftMargin = dp(this, 24);
+        rmLp.leftMargin = dp(this, 16);
         links.addView(remove, rmLp);
+        String gid = engine.groupKeyOf(c);
+        if (demo == null && !TextUtils.isEmpty(gid)) {
+            boolean platform = Engine.PlatformNotice.isPlatform(c.sourcePackageName());
+            String gname = platform ? sourceName(c) : (TextUtils.isEmpty(c.groupName) ? sourceName(c) : c.groupName);
+            String mode = engine.groupMode(gid);
+            TextView manage = linkText(Engine.MODE_NORMAL.equals(mode) ? "管理这个群" : "这个群：" + modeLabel(mode), Ui.SUB);
+            manage.setOnClickListener(v -> {
+                holder[0].dismiss();
+                chooseGroupMode(gid, gname, c.sourcePackageName(), mode);
+            });
+            LinearLayout.LayoutParams mgLp = lp(-2, dp(this, 44));
+            mgLp.leftMargin = dp(this, 16);
+            links.addView(manage, mgLp);
+        }
         LinearLayout.LayoutParams linksLp = lp(-1, -2);
         linksLp.topMargin = dp(this, 14);
         content.addView(links, linksLp);
@@ -1834,6 +1858,145 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             Toast.makeText(this, "系统未授予通知权限", Toast.LENGTH_SHORT).show();
         }
         if (setupDialog != null && setupDialog.isShowing()) fillSetup();
+    }
+
+    // ---------- 按群管理 ----------
+    private android.app.Dialog groupDialog;
+    private LinearLayout groupBody;
+
+    String groupMenuHint() {
+        int focus = 0, ignore = 0;
+        List<Engine.GroupInfo> list = engine.groupList();
+        for (Engine.GroupInfo g : list) {
+            if (Engine.MODE_FOCUS.equals(g.mode)) focus++;
+            else if (Engine.MODE_IGNORE.equals(g.mode)) ignore++;
+        }
+        if (list.isEmpty()) return "收到群消息后，可以设重点关注或不用管";
+        return list.size() + " 个群 · 重点关注 " + focus + " · 不用管 " + ignore;
+    }
+
+    static String modeLabel(String mode) {
+        return Engine.MODE_FOCUS.equals(mode) ? "重点关注" : Engine.MODE_IGNORE.equals(mode) ? "不用管" : "普通";
+    }
+
+    /** 群列表：每行是来源图标、群名、来源 · 卡片数 · 最近消息，右侧是当前处理方式；点一行改设置。 */
+    void showGroupManager() {
+        if (groupDialog != null && groupDialog.isShowing()) {
+            fillGroups();
+            return;
+        }
+        groupBody = new LinearLayout(this);
+        groupBody.setOrientation(LinearLayout.VERTICAL);
+        fillGroups();
+        groupDialog = showSheet(groupBody, null);
+        groupDialog.setOnDismissListener(d -> groupDialog = null);
+    }
+
+    void fillGroups() {
+        if (groupBody == null) return;
+        groupBody.removeAllViews();
+        TextView title = uiText("按群管理", 21, Ui.TEXT, false);
+        title.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        LinearLayout.LayoutParams tLp = lp(-1, -2);
+        tLp.topMargin = dp(this, 16);
+        groupBody.addView(title, tLp);
+        TextView intro = uiText("重点关注：放宽识别，同学发的作业通知、讨论里定下的时间也会出卡。\n"
+                + "不用管：这个群的消息不再出卡，已有的卡移到「已移除的卡片」。", 13, Ui.SUB, false);
+        intro.setLineSpacing(dp(this, 4), 1f);
+        LinearLayout.LayoutParams iLp = lp(-1, -2);
+        iLp.topMargin = dp(this, 8);
+        iLp.bottomMargin = dp(this, 8);
+        groupBody.addView(intro, iLp);
+
+        List<Engine.GroupInfo> list = engine.groupList();
+        if (list.isEmpty()) {
+            TextView none = uiText("还没有收到过群消息。开启自动读取后，收到消息的群会出现在这里。", 14, Ui.MUTE, false);
+            none.setLineSpacing(dp(this, 4), 1f);
+            none.setPadding(0, dp(this, 24), 0, dp(this, 24));
+            groupBody.addView(none);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        String lastSection = null;
+        for (Engine.GroupInfo g : list) {
+            String section = modeLabel(g.mode);
+            if (!section.equals(lastSection)) {
+                TextView s = uiText(section, 12, Ui.MUTE, true);
+                s.setPadding(dp(this, 2), dp(this, 18), 0, dp(this, 4));
+                groupBody.addView(s);
+                lastSection = section;
+            }
+            groupBody.addView(groupRow(g, now), lp(-1, -2));
+        }
+    }
+
+    private View groupRow(Engine.GroupInfo g, long now) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(this, 60));
+        row.setPadding(dp(this, 2), dp(this, 10), dp(this, 2), dp(this, 10));
+        row.setBackground(Ui.ripple(this, null, Ui.press(), 12));
+        String app = appNameFor(g.pkg);
+        row.addView(sourceMark(app, g.pkg, 22));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView name = uiText(g.name, 15, Engine.MODE_IGNORE.equals(g.mode) ? Ui.MUTE : Ui.TEXT, true);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        col.addView(name);
+        int cards = engine.cardCount(g.id);
+        StringBuilder sub = new StringBuilder(g.isPlatform() ? "学习平台通知" : app);
+        if (cards > 0) sub.append(" · ").append(cards).append(" 张卡");
+        if (g.lastTs > 0) sub.append(" · ").append(relativeTime(Math.min(g.lastTs, now)));
+        TextView s = uiText(sub.toString(), 12, Ui.MUTE, false);
+        s.setSingleLine(true);
+        s.setEllipsize(TextUtils.TruncateAt.END);
+        s.setPadding(0, dp(this, 5), 0, 0);
+        col.addView(s);
+        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, -2, 1);
+        cLp.leftMargin = dp(this, 12);
+        cLp.rightMargin = dp(this, 10);
+        row.addView(col, cLp);
+        int fg = Engine.MODE_FOCUS.equals(g.mode) ? Ui.ACCENT : Engine.MODE_IGNORE.equals(g.mode) ? Ui.MUTE : Ui.SUB;
+        int bg = Engine.MODE_FOCUS.equals(g.mode) ? Ui.ACCENT_BG : Ui.FILL;
+        row.addView(Ui.tag(this, modeLabel(g.mode) + " ▾", fg, bg));
+        row.setOnClickListener(v -> chooseGroupMode(g.id, g.name, g.pkg, g.mode));
+        return row;
+    }
+
+    /** 改一个群的处理方式；设成不用管时先确认，因为已有的卡会一起移走。 */
+    void chooseGroupMode(String gid, String name, String pkg, String current) {
+        String[] modes = {Engine.MODE_FOCUS, Engine.MODE_NORMAL, Engine.MODE_IGNORE};
+        String[] labels = {"重点关注 · 放宽识别，宁可多出卡",
+                "普通 · 按默认规则识别",
+                "不用管 · 这个群不再出卡"};
+        int checked = Engine.MODE_FOCUS.equals(current) ? 0 : Engine.MODE_IGNORE.equals(current) ? 2 : 1;
+        alert().setTitle(name).setSingleChoiceItems(labels, checked, (d, which) -> {
+            d.dismiss();
+            String mode = modes[which];
+            if (mode.equals(current)) return;
+            int existing = engine.cardCount(gid);
+            if (Engine.MODE_IGNORE.equals(mode) && existing > 0) {
+                alert().setTitle("「" + name + "」不用管？")
+                        .setMessage("这个群现有的 " + existing + " 张卡会移到「已移除的卡片」，之后的消息不再出卡。随时可以改回来。")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("不用管", (dd, w) -> applyGroupMode(gid, name, pkg, mode))
+                        .show();
+            } else {
+                applyGroupMode(gid, name, pkg, mode);
+            }
+        }).setNegativeButton("取消", null).show();
+    }
+
+    private void applyGroupMode(String gid, String name, String pkg, String mode) {
+        int removed = engine.setGroupMode(gid, name, pkg, mode, System.currentTimeMillis());
+        EngineHolder.save(this);
+        render();
+        if (groupDialog != null && groupDialog.isShowing()) fillGroups();
+        String msg = Engine.MODE_IGNORE.equals(mode)
+                ? (removed > 0 ? "已设为不用管，移走 " + removed + " 张卡" : "已设为不用管")
+                : Engine.MODE_FOCUS.equals(mode) ? "已设为重点关注" : "已恢复普通";
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
     }
 
     private android.app.Dialog setupDialog;

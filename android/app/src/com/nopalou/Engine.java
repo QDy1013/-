@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -984,6 +985,15 @@ public class Engine {
     }
 
     public void process(Msg m) {
+        if (!splitting) {
+            // 按群管理：登记这个群；用户设成“不用管”的群直接跳过，不出卡、不参与上下文。
+            GroupInfo gi = touchGroup(m.groupId, m.groupName, m.pkg, m.ts);
+            if (gi != null && MODE_IGNORE.equals(gi.mode)) {
+                nIn++;
+                nNoise++;
+                return;
+            }
+        }
         if (!splitting && m.text != null) {
             List<String> items = splitItems(m.text, m.ts);
             if (items.size() >= 2) {
@@ -1023,6 +1033,12 @@ public class Engine {
         if (rule != null) label = rule;
         // 提问不是待办（"周五之前交实验报告吗"）：统计模型误判成待办时在这里拦下
         if ("action".equals(label) && isQuestion(t)) label = "discussion";
+        // 重点关注的群：带动作和时间的“讨论/闲聊”也当待办（提问除外），宁可多出一张让用户确认。
+        boolean focus = MODE_FOCUS.equals(groupMode(m.groupId));
+        if (focus && ("discussion".equals(label) || "chatter".equals(label))
+                && f.get("M:has_action") > 0 && f.get("M:has_time") > 0 && !isQuestion(t)) {
+            label = "action";
+        }
         observe(m.groupId, m.sender, "action".equals(label) || "notice".equals(label));
 
         double rel = relevance(t, m.groupName);
@@ -1141,7 +1157,7 @@ public class Engine {
         if (examWord != null) {
             Deadline ed = parseDeadline(t, m.ts);
             String sender = m.sender == null ? "" : m.sender;
-            boolean trusted = containsAny(sender, TEACHER_HINTS) || P_ATALL.matcher(t).find();
+            boolean trusted = focus || containsAny(sender, TEACHER_HINTS) || P_ATALL.matcher(t).find();
             boolean ask = containsAny(t, ASK_WORDS);
             boolean firstPerson = t.trim().startsWith("我") || t.trim().startsWith("俺")
                     || t.trim().startsWith("咱们");
@@ -1192,7 +1208,7 @@ public class Engine {
             remember(m);
             return;                      // ②类只出信息卡，不占待办位
         }
-        boolean keepGroup = containsAny(m.sender == null ? "" : m.sender, TEACHER_HINTS)
+        boolean keepGroup = focus || containsAny(m.sender == null ? "" : m.sender, TEACHER_HINTS)
                 || P_ATALL.matcher(t).find();
         if (rel <= 0.4 && m.groupName.contains("课") && !keepGroup
                 && !containsAny(m.groupName, meCourses())) {
@@ -1234,7 +1250,13 @@ public class Engine {
     public boolean processPlatform(Msg m) {
         String app = PlatformNotice.appName(m.pkg);
         if (app == null) return false;
+        // 学习平台按整个 App 管理：设成“不用管”就不再出卡。
+        GroupInfo gi = touchGroup(m.pkg + "|" + app, app, m.pkg, m.ts);
         nIn++;
+        if (gi != null && MODE_IGNORE.equals(gi.mode)) {
+            nNoise++;
+            return true;
+        }
         PlatformNotice.Notice n = PlatformNotice.parse(m.pkg, m.groupName, m.text, m.ts);
         if (n == null) {
             nNoise++;
@@ -1632,6 +1654,11 @@ public class Engine {
         Writer w = new OutputStreamWriter(out, "UTF-8");
         w.write("NPL1\n");
         w.write("SEQ\t" + seq + "\n");
+        // 群登记：旧版本读到 GROUP 行会跳过（不在卡片块里），不影响卡片恢复。
+        for (GroupInfo g : groups.values()) {
+            w.write("GROUP\t" + esc(g.id) + "\t" + esc(g.name) + "\t" + esc(g.pkg) + "\t" + g.mode
+                    + "\t" + g.lastTs + "\t" + g.count + "\n");
+        }
         List<Card> stored = new ArrayList<>(cards);
         stored.addAll(removedCards);
         w.write("N\t" + stored.size() + "\n");
@@ -1685,6 +1712,7 @@ public class Engine {
             return;
         }
         List<Card> loaded = new ArrayList<>();
+        Map<String, GroupInfo> loadedGroups = new LinkedHashMap<>();
         long loadedSeq = -1;
         Card cur = null;
         while ((line = br.readLine()) != null) {
@@ -1693,6 +1721,20 @@ public class Engine {
             String key = t < 0 ? line : line.substring(0, t);
             String val = t < 0 ? "" : line.substring(t + 1);
             if ("SEQ".equals(key)) { loadedSeq = toLong(val, loadedSeq); continue; }
+            if ("GROUP".equals(key) && cur == null) {
+                String[] f = val.split("\t", -1);
+                if (f.length >= 6 && !blank(unesc(f[0]))) {
+                    GroupInfo g = new GroupInfo();
+                    g.id = unesc(f[0]);
+                    g.name = unesc(f[1]);
+                    g.pkg = unesc(f[2]) == null ? "" : unesc(f[2]);
+                    g.mode = MODE_FOCUS.equals(f[3]) || MODE_IGNORE.equals(f[3]) ? f[3] : MODE_NORMAL;
+                    g.lastTs = toLong(f[4], 0);
+                    g.count = (int) Math.max(0, Math.min(Integer.MAX_VALUE, toLong(f[5], 0)));
+                    loadedGroups.put(g.id, g);
+                }
+                continue;
+            }
             if ("N".equals(key)) continue;
             if ("CARD".equals(key)) { cur = new Card(); continue; }
             if ("END".equals(key)) { if (cur != null) loaded.add(cur); cur = null; continue; }
@@ -1733,6 +1775,8 @@ public class Engine {
         }
         cards.clear();
         removedCards.clear();
+        groups.clear();
+        groups.putAll(loadedGroups);
         if (loadedSeq > seq) seq = loadedSeq;
         boolean repairedTitle = false;
         for (Card c : loaded) {                  // 兜底：老数据里的编号也不能被撞
@@ -1920,6 +1964,129 @@ public class Engine {
             }
         });
         return out.size() > limit ? out.subList(0, limit) : out;
+    }
+
+    // ---------- 按群管理 ----------
+    public static final String MODE_NORMAL = "normal";
+    public static final String MODE_FOCUS = "focus";
+    public static final String MODE_IGNORE = "ignore";
+    private static final int MAX_GROUPS = 300;
+
+    /** 见过的群：名称、来源、最近一次消息时间、累计消息数和用户设定的处理方式。 */
+    public static final class GroupInfo {
+        public String id, name, pkg;
+        public String mode = MODE_NORMAL;
+        public long lastTs;
+        public int count;
+
+        /** 学习平台按整个 App 管理，卡片的群编号是“包名|课程”。 */
+        public boolean isPlatform() { return PlatformNotice.isPlatform(pkg); }
+    }
+
+    private final Map<String, GroupInfo> groups = new LinkedHashMap<>();
+
+    /**
+     * 记一次群消息。登记本身不让存档变脏（闲聊不触发整份存档，见 Step32Test），
+     * 群列表随下一次真正的存盘（出卡、改卡、改群设置）一起写入；没写入的群下次来消息时会重新登记。
+     */
+    GroupInfo touchGroup(String gid, String name, String pkg, long ts) {
+        if (blank(gid)) return null;
+        GroupInfo g = groups.get(gid);
+        if (g == null) {
+            if (groups.size() >= MAX_GROUPS) evictOldGroup();
+            g = new GroupInfo();
+            g.id = gid;
+            g.name = blank(name) ? gid : name.trim();
+            g.pkg = pkg == null ? "" : pkg;
+            groups.put(gid, g);
+        } else if (!blank(name)) {
+            g.name = name.trim();
+        }
+        g.count++;
+        if (ts > g.lastTs) g.lastTs = ts;
+        return g;
+    }
+
+    /** 群太多时丢掉最久没消息的“普通”群；设过重点关注 / 不用管的群一直保留。 */
+    private void evictOldGroup() {
+        GroupInfo oldest = null;
+        for (GroupInfo g : groups.values()) {
+            if (!MODE_NORMAL.equals(g.mode)) continue;
+            if (oldest == null || g.lastTs < oldest.lastTs) oldest = g;
+        }
+        if (oldest != null) groups.remove(oldest.id);
+    }
+
+    public String groupMode(String gid) {
+        GroupInfo g = gid == null ? null : groups.get(gid);
+        return g == null ? MODE_NORMAL : g.mode;
+    }
+
+    /** 群列表：重点关注在前、不用管在后，同类按最近消息时间倒序。 */
+    public List<GroupInfo> groupList() {
+        List<GroupInfo> out = new ArrayList<>(groups.values());
+        out.sort((a, b) -> {
+            int ra = MODE_FOCUS.equals(a.mode) ? 0 : MODE_IGNORE.equals(a.mode) ? 2 : 1;
+            int rb = MODE_FOCUS.equals(b.mode) ? 0 : MODE_IGNORE.equals(b.mode) ? 2 : 1;
+            if (ra != rb) return Integer.compare(ra, rb);
+            return Long.compare(b.lastTs, a.lastTs);
+        });
+        return out;
+    }
+
+    /** 卡片所属的管理单元：聊天群按群编号，学习平台按整个 App。 */
+    public String groupKeyOf(Card c) {
+        if (c == null) return null;
+        String pkg = c.sourcePackageName();
+        String app = PlatformNotice.appName(pkg);
+        return app != null ? pkg + "|" + app : c.groupId;
+    }
+
+    private boolean inGroup(Card c, GroupInfo g) {
+        if (g.isPlatform()) return g.pkg.equals(c.sourcePackageName());
+        return g.id.equals(c.groupId);
+    }
+
+    /** 这个群现在有几张未移除的卡。 */
+    public int cardCount(String gid) {
+        GroupInfo g = groups.get(gid);
+        if (g == null) return 0;
+        int n = 0;
+        for (Card c : cards) if (inGroup(c, g)) n++;
+        return n;
+    }
+
+    /**
+     * 改群的处理方式。设为“不用管”时，这个群现有的卡一起移到“已移除的卡片”（可恢复）。
+     * 群还没登记过（老卡片所在的群）时用 name / pkg 先登记。
+     *
+     * @return 因“不用管”被移除的卡片数
+     */
+    public int setGroupMode(String gid, String name, String pkg, String mode, long now) {
+        if (blank(gid)) return 0;
+        if (!MODE_FOCUS.equals(mode) && !MODE_IGNORE.equals(mode)) mode = MODE_NORMAL;
+        GroupInfo g = groups.get(gid);
+        if (g == null) {
+            g = new GroupInfo();
+            g.id = gid;
+            g.name = blank(name) ? gid : name.trim();
+            g.pkg = pkg == null ? "" : pkg;
+            groups.put(gid, g);
+        }
+        g.mode = mode;
+        int removed = 0;
+        if (MODE_IGNORE.equals(mode)) {
+            for (Card c : new ArrayList<>(cards)) {
+                if (inGroup(c, g)) {
+                    cards.remove(c);
+                    c.removedAt = now;
+                    removedCards.add(c);
+                    removed++;
+                }
+            }
+        }
+        notifyChanged();
+        return removed;
     }
 
     public void clearLocalData() {
