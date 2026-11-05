@@ -95,6 +95,10 @@ public class ProfileActivity extends Activity {
         root.addView(tip);
 
         setContentView(sv);
+        getWindow().setStatusBarColor(Ui.BG);
+        getWindow().setNavigationBarColor(Ui.BG);
+        sv.setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                | (android.os.Build.VERSION.SDK_INT >= 26 ? android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0));
     }
 
     /** 加一行"标签 + 输入框"，返回输入框。 */
@@ -116,12 +120,11 @@ public class ProfileActivity extends Activity {
         e.setTextSize(15);
         e.setSingleLine(true);
         e.setInputType(inputType);
-        e.setPadding(dp(this, 12), dp(this, 10), dp(this, 12), dp(this, 10));
+        e.setPadding(dp(this, 14), dp(this, 13), dp(this, 14), dp(this, 13));
         GradientDrawable g = new GradientDrawable();
-        // 输入框改成白色卡片底 + 极浅描边，圆角统一 12dp。
-        g.setColor(Ui.CARD);
-        g.setCornerRadius(dp(this, 12));
-        g.setStroke(dp(this, 1), Ui.LINE);
+        // 输入框：和首页搜索框同一种浅灰填充，不加描边。
+        g.setColor(Ui.FILL);
+        g.setCornerRadius(dp(this, 14));
         e.setBackground(g);
         if (value != null && !value.trim().isEmpty()) e.setText(value);
         root.addView(e, new LinearLayout.LayoutParams(
@@ -134,25 +137,27 @@ public class ProfileActivity extends Activity {
         // 主按钮：品牌蓝底 + 纯白文字，浅色界面里唯一的高饱和块。
         b.setTextColor(Color.WHITE);
         GradientDrawable g = new GradientDrawable();
-        g.setColor(Ui.BLUE);
-        g.setCornerRadius(dp(this, 10));
+        g.setColor(Ui.ACCENT);
+        g.setCornerRadius(dp(this, 14));
         b.setBackground(g);
+        b.setTypeface(Ui.medium());
         return b;
     }
 
     Button button(String text) {
         Button btn = new Button(this);
         btn.setText(text);
-        btn.setTextSize(13);
+        btn.setTextSize(15);
         btn.setAllCaps(false);
-        // 次按钮：白底 + 极浅描边 + 主文字色，靠描边区分层次，不用深色底。
+        // 次按钮：浅灰填充 + 墨色文字，与首页次级按钮一致。
         btn.setTextColor(Ui.TEXT);
         GradientDrawable g = new GradientDrawable();
-        g.setColor(Ui.CARD);
-        g.setCornerRadius(dp(this, 10));
-        g.setStroke(dp(this, 1), Ui.LINE);
+        g.setColor(Ui.FILL);
+        g.setCornerRadius(dp(this, 14));
         btn.setBackground(g);
-        btn.setPadding(dp(this, 16), dp(this, 8), dp(this, 16), dp(this, 8));
+        btn.setStateListAnimator(null);
+        btn.setMinHeight(dp(this, 50));
+        btn.setPadding(dp(this, 22), dp(this, 10), dp(this, 22), dp(this, 10));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.rightMargin = dp(this, 10);

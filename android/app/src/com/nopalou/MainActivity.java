@@ -1,6 +1,7 @@
 package com.nopalou;
 
 import android.Manifest;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DatePickerDialog;
@@ -32,8 +33,10 @@ import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.Button;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -88,6 +91,13 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     private EditText searchField;
     private TextView searchClear;
     private ScrollView listScroll;
+    private TextView headline;
+    private LinearLayout emptyBox;
+    private View emptyIcon;
+    private TextView emptyTitle;
+    private LinearLayout undoBar;
+    private TextView undoText;
+    private TextView undoAction;
     /** 来源 App 图标缓存：只存 ConstantState，每张卡各自 newDrawable，避免共享可变对象。 */
     private static final Map<String, Drawable.ConstantState> sourceIconCache = new HashMap<>();
     /** 查询失败也缓存，避免每次 render 反复向 PackageManager 要图标。 */
@@ -208,7 +218,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             String flat = Settings.Secure.getString(getContentResolver(),
                     "enabled_notification_listeners");
             if (flat == null || !flat.contains(getPackageName())) {
-                new AlertDialog.Builder(this)
+                alert()
                         .setTitle("还差一步")
                         .setMessage("在「通知使用权」里打开「不爬楼」，我才能读到群消息。\n\n"
                                 + "只在本机读取和处理，飞行模式下照常工作。")
@@ -221,40 +231,34 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     }
 
     /**
-     * 「自动读取状态」小条：主界面最重要的一句话。
-     * 已连接 → 一行绿色小字，说明自动读取在跑、最近一条是什么时候；
-     * 未连接 → 整条变成浅琥珀可点提醒条，点一下给出重新开启的步骤；
-     * 离线演示 → 保持原来的演示提示（由 render() 单独处理）。
+     * 顶栏右侧的读取状态胶囊：已连接 = 绿点「自动整理中」，未连接 = 琥珀「未开启读取」。
+     * 点开都是自检；演示态由 render() 单独处理。
      */
     void updateNotifStatus() {
         if (notifStatus == null) return;
         boolean on = demo == null && EngineHolder.listenerConnected;
         if (on) {
-            // 已连接：绿点 + 绿色小字，背景去掉，回到干净的一行文字。
             long last = EngineHolder.lastReceivedAt;
-            String line;
-            if (last == 0) {
-                // 真机问题：原本文案太长会折成两行，这里压到一行放得下。
-                line = "● 自动整理中 · 等待新消息";
-            } else {
-                // 只留相对时间，不再拼群名，保证一行显示完整；「已连接」保留作状态锚点。
-                line = "● 自动整理中 · 最近收到 " + relativeTime(last);
-            }
-            notifStatus.setText(line);
-            notifStatus.setTextColor(Ui.HERO_STATUS);
-            notifStatus.setTextSize(11);
-            notifStatus.setBackground(null);
-            notifStatus.setPadding(0, dp(this, 6), 0, dp(this, 4));
+            notifStatus.setText(statusText("自动整理中", Ui.GREEN));
+            notifStatus.setTextColor(Ui.SUB);
+            notifStatus.setBackground(Ui.ripple(this, Ui.round(this, Ui.CARD, 15), Ui.press(), 15));
+            notifStatus.setContentDescription(last == 0 ? "自动读取已连接，等待新消息"
+                    : "自动读取已连接，最近收到 " + relativeTime(last));
         } else {
-            // 未连接：整条做成可点的琥珀提醒条，比一行灰字更像「该处理的事」。
-            notifStatus.setText(WatchdogJob.accessEnabled(this)
-                    ? "通知读取：正在重连 · 系统恢复后自动继续"
-                    : "通知读取：未连接。点这里开启，群消息就会自动变成待办");
+            boolean reconnecting = WatchdogJob.accessEnabled(this);
+            notifStatus.setText(statusText(reconnecting ? "正在重连" : "未开启读取", Ui.AMBER_TX));
             notifStatus.setTextColor(Ui.AMBER_TX);
-            notifStatus.setTextSize(11);
-            notifStatus.setBackground(Ui.round(this, Ui.AMBER_BG, 12));
-            notifStatus.setPadding(dp(this, 14), dp(this, 10), dp(this, 14), dp(this, 10));
+            notifStatus.setBackground(Ui.ripple(this, Ui.round(this, Ui.AMBER_BG, 15), Ui.press(), 15));
+            notifStatus.setContentDescription(reconnecting ? "通知读取正在重连，点按查看" : "通知读取未连接，点按查看");
         }
+    }
+
+    /** 「● 文字」：圆点单独上色并缩小一点，比整行彩字更克制。 */
+    CharSequence statusText(String label, int dotColor) {
+        SpannableString s = new SpannableString("● " + label);
+        s.setSpan(new ForegroundColorSpan(dotColor), 0, 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new RelativeSizeSpan(0.75f), 0, 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return s;
     }
 
     /**
@@ -273,7 +277,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     }
 
     void showNotifHint() {
-        new AlertDialog.Builder(this)
+        alert()
                 .setTitle("收不到群消息")
                 .setMessage("系统断开了不爬楼的通知读取（部分手机重启后会这样）。"
                         + "请在「通知使用权」里把不爬楼关掉再打开；\n"
@@ -292,10 +296,6 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         return (int) (v * c.getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    /**
-     * 顶部问候词：只返回三个短词，界面里和日期拼在同一行，
-     * 长句子会把「M月d日 · 问候」这一行撑换行，浅色风格也不适合喊话式文案。
-     */
     String greeting() {
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
         if (hour >= 5 && hour <= 11) return "早上好";
@@ -303,152 +303,388 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         return "晚上好";
     }
 
-    /** 副标题整行：日期 + 星期 + 问候词，形如「11月4日 星期三 · 晚上好」。 */
+    /** 顶栏日期：「11月5日 周四 · 晚上好」。 */
     String subLine() {
         Calendar c = Calendar.getInstance();
         String[] week = {"日", "一", "二", "三", "四", "五", "六"};
-        String day = c.get(Calendar.MONTH) + 1 + "月" + c.get(Calendar.DAY_OF_MONTH) + "日";
-        return day + " 星期" + week[c.get(Calendar.DAY_OF_WEEK) - 1] + " · " + greeting();
+        String day = (c.get(Calendar.MONTH) + 1) + "月" + c.get(Calendar.DAY_OF_MONTH) + "日";
+        return day + " 周" + week[c.get(Calendar.DAY_OF_WEEK) - 1] + " · " + greeting();
     }
 
+    LinearLayout.LayoutParams lp(int w, int h) {
+        return new LinearLayout.LayoutParams(w, h);
+    }
+
+    AlertDialog.Builder alert() {
+        return new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Light_Dialog_Alert);
+    }
+
+    /**
+     * 页面结构：整页一个滚动区（顶栏、大标题、搜索、筛选、卡片一起滚，小屏也不会被头部占满），
+     * 底部只在未开启读取时露出主按钮；最上层叠一条「已完成 · 撤销」提示。
+     */
     void buildUi() {
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(Ui.BG);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setFocusableInTouchMode(true);
-        root.setBackgroundColor(Ui.BG);
-        root.setPadding(dp(this,20), dp(this,12), dp(this,20),0);
-        LinearLayout brand = new LinearLayout(this);
-        brand.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView mark = new ImageView(this);
-        mark.setImageDrawable(getApplicationInfo().loadIcon(getPackageManager()));
-        mark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        brand.addView(mark,new LinearLayout.LayoutParams(dp(this,28),dp(this,28)));
-        TextView name=uiText("不爬楼",17,Ui.TEXT,true);
-        name.setPadding(dp(this,9),0,0,0);
-        brand.addView(name,new LinearLayout.LayoutParams(0,-2,1));
-        TextView more=uiText("⋯",24,Ui.TEXT,false);
-        more.setGravity(Gravity.CENTER);more.setContentDescription("更多");
-        more.setBackground(Ui.rippleCircle(this,Ui.withAlpha(Ui.BLUE,25)));
-        more.setOnClickListener(v->showMoreMenu());
-        brand.addView(more,new LinearLayout.LayoutParams(dp(this,44),dp(this,44)));
-        root.addView(brand);
+        frame.addView(root, new FrameLayout.LayoutParams(-1, -1));
 
-        LinearLayout hero=new LinearLayout(this);hero.setOrientation(LinearLayout.VERTICAL);
-        hero.setPadding(0,dp(this,17),0,dp(this,10));
-        hero.setBackground(Ui.round(this,Ui.HERO,22));
-        sub=uiText(subLine(),12,Ui.HERO_SUB,false);hero.addView(sub);
-        TextView title=uiText("行动清单",29,Ui.TEXT,true);
-        title.setPadding(0,dp(this,6),0,dp(this,4));hero.addView(title);
-        stats=uiText("",13,Ui.HERO_TEXT,false);hero.addView(stats);
-        notifStatus=uiText("",11,Ui.HERO_STATUS,false);
-        notifStatus.setOnClickListener(v->showHealthCheck());hero.addView(notifStatus);
-        LinearLayout.LayoutParams heroLp=new LinearLayout.LayoutParams(-1,-2);
-        heroLp.topMargin=dp(this,10);root.addView(hero,heroLp);
-        clashBanner=uiText("",12,Ui.AMBER_TX,false);
-        clashBanner.setPadding(dp(this,12),dp(this,10),dp(this,12),dp(this,10));
-        clashBanner.setBackground(Ui.ripple(this,Ui.round(this,Ui.AMBER_BG,14),Ui.withAlpha(Ui.AMBER_TX,25),14));
-        clashBanner.setMaxLines(2);clashBanner.setEllipsize(TextUtils.TruncateAt.END);
-        clashBanner.setOnClickListener(v->showClashDetail());clashBanner.setVisibility(View.GONE);
-        LinearLayout.LayoutParams clashLp=new LinearLayout.LayoutParams(-1,-2);clashLp.topMargin=dp(this,10);root.addView(clashBanner,clashLp);
-        demoTools=new LinearLayout(this);demoTools.setVisibility(View.GONE);
-        demoButton=button("退出演示",v->toggleDemo());demoTools.addView(demoButton);
-        demoUpdate=button("播放消息更新",v->{if(demo!=null){demo.applyUpdates();demoUpdate.setVisibility(View.GONE);render();}});
-        demoUpdate.setVisibility(View.GONE);demoTools.addView(demoUpdate);root.addView(demoTools);
-        liveFilters=buildFilters();root.addView(liveFilters);
-        listScroll=new ScrollView(this);listScroll.setFillViewport(true);
+        listScroll = new ScrollView(this);
+        listScroll.setFillViewport(true);
         listScroll.setVerticalScrollBarEnabled(false);
-        cardList=new LinearLayout(this);cardList.setOrientation(LinearLayout.VERTICAL);
-        cardList.setPadding(0,dp(this,2),0,dp(this,24));listScroll.addView(cardList);
-        empty=uiText("",14,Ui.SUB,false);empty.setGravity(Gravity.CENTER);
-        empty.setLineSpacing(dp(this,6),1.1f);
-        empty.setPadding(dp(this,24),dp(this,48),dp(this,24),dp(this,48));
-        empty.setBackground(Ui.roundStroke(this,Ui.CARD,Ui.LINE,20,1));
-        cardList.addView(empty,new LinearLayout.LayoutParams(-1,-2));
-        root.addView(listScroll,new LinearLayout.LayoutParams(-1,0,1));
-        liveTools=new LinearLayout(this);liveTools.setPadding(0,dp(this,10),0,dp(this,14));
-        autoReadButton=stylePrimary(button("开启自动读取",v->{if(WatchdogJob.accessEnabled(this))showHealthCheck();else showNotifHint();}));
-        liveTools.addView(autoReadButton,new LinearLayout.LayoutParams(-1,dp(this,50)));root.addView(liveTools);
-        setContentView(root);getWindow().setStatusBarColor(Ui.BG);getWindow().setNavigationBarColor(Ui.BG);
-        root.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | (Build.VERSION.SDK_INT>=26?View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR:0));
+        listScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(this, 20), dp(this, 6), dp(this, 20), dp(this, 96));
+        listScroll.addView(page, new ViewGroup.LayoutParams(-1, -2));
+
+        // 顶栏：日期 · 读取状态 · 更多
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        sub = uiText(subLine(), 13, Ui.SUB, true);
+        sub.setSingleLine(true);
+        top.addView(sub, new LinearLayout.LayoutParams(0, -2, 1));
+        notifStatus = uiText("", 12, Ui.SUB, true);
+        notifStatus.setGravity(Gravity.CENTER);
+        notifStatus.setPadding(dp(this, 11), 0, dp(this, 12), 0);
+        notifStatus.setOnClickListener(v -> showHealthCheck());
+        top.addView(notifStatus, lp(-2, dp(this, 30)));
+        TextView more = uiText("⋯", 20, Ui.TEXT, true);
+        more.setGravity(Gravity.CENTER);
+        more.setContentDescription("更多");
+        more.setBackground(Ui.ripple(this, Ui.disc(this, Ui.CARD), Ui.press(), 20));
+        more.setOnClickListener(v -> showMoreMenu());
+        LinearLayout.LayoutParams moreLp = lp(dp(this, 40), dp(this, 40));
+        moreLp.leftMargin = dp(this, 8);
+        top.addView(more, moreLp);
+        page.addView(top, lp(-1, dp(this, 56)));
+
+        // 大标题：一句话结论，数字上色
+        headline = uiText("", 28, Ui.TEXT, false);
+        headline.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        headline.setLineSpacing(dp(this, 2), 1f);
+        LinearLayout.LayoutParams hlLp = lp(-1, -2);
+        hlLp.topMargin = dp(this, 14);
+        page.addView(headline, hlLp);
+        stats = uiText("", 14, Ui.SUB, false);
+        stats.setLineSpacing(dp(this, 3), 1f);
+        LinearLayout.LayoutParams stLp = lp(-1, -2);
+        stLp.topMargin = dp(this, 8);
+        page.addView(stats, stLp);
+
+        // 撞车提醒
+        clashBanner = uiText("", 13, Ui.ORANGE, true);
+        clashBanner.setPadding(dp(this, 14), dp(this, 12), dp(this, 14), dp(this, 12));
+        clashBanner.setBackground(Ui.ripple(this, Ui.round(this, Ui.ORANGE_BG, 14), Ui.press(), 14));
+        clashBanner.setLineSpacing(dp(this, 2), 1f);
+        clashBanner.setMaxLines(2);
+        clashBanner.setEllipsize(TextUtils.TruncateAt.END);
+        clashBanner.setOnClickListener(v -> showClashDetail());
+        clashBanner.setVisibility(View.GONE);
+        LinearLayout.LayoutParams clashLp = lp(-1, -2);
+        clashLp.topMargin = dp(this, 16);
+        page.addView(clashBanner, clashLp);
+
+        // 离线演示条
+        demoTools = new LinearLayout(this);
+        demoTools.setGravity(Gravity.CENTER_VERTICAL);
+        demoTools.setVisibility(View.GONE);
+        demoTools.setPadding(dp(this, 16), dp(this, 10), dp(this, 10), dp(this, 10));
+        demoTools.setBackground(Ui.round(this, Ui.ACCENT_BG, 16));
+        LinearLayout demoText = new LinearLayout(this);
+        demoText.setOrientation(LinearLayout.VERTICAL);
+        demoText.addView(uiText("离线演示", 14, Ui.ACCENT, true));
+        TextView demoHint = uiText("样例卡片，不进日常列表", 12, Ui.withAlpha(Ui.ACCENT, 190), false);
+        demoHint.setSingleLine(true);
+        demoHint.setEllipsize(TextUtils.TruncateAt.END);
+        demoHint.setPadding(0, dp(this, 4), 0, 0);
+        demoText.addView(demoHint);
+        demoTools.addView(demoText, new LinearLayout.LayoutParams(0, -2, 1));
+        demoUpdate = stylePrimary(button("播放更新", v -> {
+            if (demo != null) {
+                demo.applyUpdates();
+                demoUpdate.setVisibility(View.GONE);
+                render();
+            }
+        }));
+        demoUpdate.setTextSize(13);
+        demoUpdate.setVisibility(View.GONE);
+        demoTools.addView(demoUpdate, lp(-2, dp(this, 40)));
+        demoButton = button("退出", v -> toggleDemo());
+        demoButton.setBackground(Ui.ripple(this, Ui.round(this, Ui.CARD, 12), Ui.press(), 12));
+        demoButton.setTextSize(13);
+        LinearLayout.LayoutParams exitLp = lp(-2, dp(this, 40));
+        exitLp.leftMargin = dp(this, 8);
+        demoTools.addView(demoButton, exitLp);
+        LinearLayout.LayoutParams demoLp = lp(-1, -2);
+        demoLp.topMargin = dp(this, 16);
+        page.addView(demoTools, demoLp);
+
+        liveFilters = buildFilters();
+        page.addView(liveFilters);
+
+        cardList = new LinearLayout(this);
+        cardList.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams listLp = lp(-1, -2);
+        listLp.topMargin = dp(this, 4);
+        page.addView(cardList, listLp);
+
+        // 空状态
+        emptyBox = new LinearLayout(this);
+        emptyBox.setOrientation(LinearLayout.VERTICAL);
+        emptyBox.setGravity(Gravity.CENTER_HORIZONTAL);
+        emptyBox.setPadding(dp(this, 24), dp(this, 56), dp(this, 24), dp(this, 40));
+        emptyIcon = new View(this);
+        emptyBox.addView(emptyIcon, lp(dp(this, 52), dp(this, 52)));
+        emptyTitle = uiText("", 17, Ui.TEXT, true);
+        emptyTitle.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams etLp = lp(-2, -2);
+        etLp.topMargin = dp(this, 18);
+        emptyBox.addView(emptyTitle, etLp);
+        empty = uiText("", 14, Ui.SUB, false);
+        empty.setGravity(Gravity.CENTER);
+        empty.setLineSpacing(dp(this, 4), 1f);
+        LinearLayout.LayoutParams eLp = lp(-2, -2);
+        eLp.topMargin = dp(this, 8);
+        emptyBox.addView(empty, eLp);
+
+        root.addView(listScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        // 底部主按钮：只在没开读取时出现
+        liveTools = new LinearLayout(this);
+        liveTools.setPadding(dp(this, 20), dp(this, 10), dp(this, 20), dp(this, 16));
+        liveTools.setBackgroundColor(Ui.BG);
+        autoReadButton = stylePrimary(button("开启自动读取", v -> {
+            if (WatchdogJob.accessEnabled(this)) showHealthCheck();
+            else showNotifHint();
+        }));
+        liveTools.addView(autoReadButton, new LinearLayout.LayoutParams(-1, dp(this, 52)));
+        root.addView(liveTools);
+
+        // 撤销提示条
+        undoBar = new LinearLayout(this);
+        undoBar.setGravity(Gravity.CENTER_VERTICAL);
+        undoBar.setPadding(dp(this, 18), 0, dp(this, 6), 0);
+        undoBar.setBackground(Ui.round(this, Ui.INK, 14));
+        undoBar.setElevation(dp(this, 6));
+        undoText = uiText("", 14, Color.WHITE, false);
+        undoText.setSingleLine(true);
+        undoText.setEllipsize(TextUtils.TruncateAt.END);
+        undoBar.addView(undoText, new LinearLayout.LayoutParams(0, -2, 1));
+        undoAction = uiText("撤销", 14, Color.parseColor("#9DB0FF"), true);
+        undoAction.setGravity(Gravity.CENTER);
+        undoAction.setPadding(dp(this, 14), 0, dp(this, 14), 0);
+        undoAction.setBackground(Ui.ripple(this, null, Ui.withAlpha(Color.WHITE, 40), 10));
+        undoBar.addView(undoAction, lp(-2, dp(this, 40)));
+        undoBar.setVisibility(View.GONE);
+        FrameLayout.LayoutParams undoLp = new FrameLayout.LayoutParams(-1, dp(this, 52), Gravity.BOTTOM);
+        undoLp.setMargins(dp(this, 16), 0, dp(this, 16), dp(this, 20));
+        frame.addView(undoBar, undoLp);
+
+        setContentView(frame);
+        getWindow().setStatusBarColor(Ui.BG);
+        getWindow().setNavigationBarColor(Ui.BG);
+        frame.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                | (Build.VERSION.SDK_INT >= 26 ? View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0));
         root.requestFocus();
     }
 
-    TextView uiText(String text,float size,int color,boolean bold){
-        TextView v=new TextView(this);v.setText(text);v.setTextSize(size);v.setTextColor(color);
+    TextView uiText(String text, float size, int color, boolean bold) {
+        TextView v = new TextView(this);
+        v.setText(text);
+        v.setTextSize(size);
+        v.setTextColor(color);
         v.setIncludeFontPadding(false);
-        if(bold)v.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+        if (bold) v.setTypeface(Ui.medium());
         return v;
     }
 
-    private LinearLayout buildFilters(){
-        LinearLayout wrap=new LinearLayout(this);wrap.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout searchRow=new LinearLayout(this);searchRow.setGravity(Gravity.CENTER_VERTICAL);
-        searchRow.setBackground(Ui.roundStroke(this,Ui.CARD,Ui.LINE,15,1));
-        searchField=new EditText(this);searchField.setSingleLine(true);searchField.setTextSize(14);
-        searchField.setHint("搜索事项或消息来源");searchField.setContentDescription("搜索待办卡片");
-        searchField.setBackground(null);searchField.setTextColor(Ui.TEXT);searchField.setHintTextColor(Ui.MUTE);
-        searchField.setPadding(dp(this,14),0,dp(this,5),0);
-        searchField.setCompoundDrawablesWithIntrinsicBounds(Ui.searchGlyph(this,Ui.MUTE,17),null,null,null);
-        searchField.setCompoundDrawablePadding(dp(this,9));searchField.setText(keywords);
-        searchRow.addView(searchField,new LinearLayout.LayoutParams(0,dp(this,48),1));
-        searchClear=uiText("×",22,Ui.SUB,false);searchClear.setGravity(Gravity.CENTER);
-        searchClear.setContentDescription("清空搜索");searchClear.setBackground(Ui.rippleCircle(this,Ui.withAlpha(Ui.BLUE,30)));
-        searchClear.setVisibility(keywords.isEmpty()?View.GONE:View.VISIBLE);searchClear.setOnClickListener(v->searchField.setText(""));
-        searchRow.addView(searchClear,new LinearLayout.LayoutParams(dp(this,44),dp(this,44)));
-        stateFilter=uiText("筛选",12,Ui.SUB,true);stateFilter.setGravity(Gravity.CENTER);
-        stateFilter.setContentDescription("待办状态筛选");stateFilter.setOnClickListener(v->showFilterMenu());
-        stateFilter.setBackground(Ui.ripple(this,null,Ui.withAlpha(Ui.BLUE,25),12));
-        searchRow.addView(stateFilter,new LinearLayout.LayoutParams(dp(this,52),dp(this,48)));
-        LinearLayout.LayoutParams searchLp=new LinearLayout.LayoutParams(-1,-2);searchLp.topMargin=dp(this,16);wrap.addView(searchRow,searchLp);
-        searchField.addTextChangedListener(new TextWatcher(){
-            public void beforeTextChanged(CharSequence s,int start,int count,int after){}
-            public void onTextChanged(CharSequence s,int start,int before,int count){
-                keywords=s.toString();searchClear.setVisibility(keywords.isEmpty()?View.GONE:View.VISIBLE);
-                visibleLimit=PAGE_SIZE;if(listScroll!=null)listScroll.scrollTo(0,0);
-                uiHandler.removeCallbacks(searchRefresh);uiHandler.postDelayed(searchRefresh,180);
+    /** 搜索框 + 一排筛选胶囊（全部 / 今天 / 明天 / 待确认 / 状态）。 */
+    private LinearLayout buildFilters() {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setBackground(Ui.round(this, Ui.FILL, 14));
+        searchField = new EditText(this);
+        searchField.setSingleLine(true);
+        searchField.setTextSize(15);
+        searchField.setHint("搜索事项、群名、来源");
+        searchField.setContentDescription("搜索待办卡片");
+        searchField.setBackground(null);
+        searchField.setTextColor(Ui.TEXT);
+        searchField.setHintTextColor(Ui.MUTE);
+        searchField.setPadding(dp(this, 14), 0, dp(this, 4), 0);
+        searchField.setCompoundDrawablesWithIntrinsicBounds(Ui.searchGlyph(this, Ui.MUTE, 17), null, null, null);
+        searchField.setCompoundDrawablePadding(dp(this, 10));
+        searchField.setText(keywords);
+        searchRow.addView(searchField, new LinearLayout.LayoutParams(0, dp(this, 46), 1));
+        searchClear = uiText("×", 20, Ui.SUB, false);
+        searchClear.setGravity(Gravity.CENTER);
+        searchClear.setContentDescription("清空搜索");
+        searchClear.setBackground(Ui.rippleCircle(this, Ui.press()));
+        searchClear.setVisibility(keywords.isEmpty() ? View.GONE : View.VISIBLE);
+        searchClear.setOnClickListener(v -> searchField.setText(""));
+        searchRow.addView(searchClear, lp(dp(this, 44), dp(this, 44)));
+        LinearLayout.LayoutParams searchLp = lp(-1, -2);
+        searchLp.topMargin = dp(this, 22);
+        wrap.addView(searchRow, searchLp);
+        searchField.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                keywords = s.toString();
+                searchClear.setVisibility(keywords.isEmpty() ? View.GONE : View.VISIBLE);
+                visibleLimit = PAGE_SIZE;
+                uiHandler.removeCallbacks(searchRefresh);
+                uiHandler.postDelayed(searchRefresh, 180);
             }
-            public void afterTextChanged(Editable s){}
+            public void afterTextChanged(Editable s) {}
         });
-        LinearLayout tabs=new LinearLayout(this);tabs.setGravity(Gravity.CENTER_VERTICAL);
-        tabs.setPadding(dp(this,4),dp(this,4),dp(this,4),dp(this,4));
-        tabs.setBackground(Ui.round(this,Color.parseColor("#E9EEF4"),14));
-        String[] labels={"全部","今天","明天","待确认"};
-        for(int i=0;i<labels.length;i++){
-            final int index=i;TextView tab=uiText(labels[i],13,Ui.SUB,true);tab.setGravity(Gravity.CENTER);
-            tab.setOnClickListener(v->{scope=Engine.CardScope.ALL;window=Engine.CardWindow.values()[index];resetCardPage();});
-            windowTabs[i]=tab;
-            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(this,44),1);if(i>0)lp.leftMargin=dp(this,5);tabs.addView(tab,lp);
+
+        HorizontalScrollView chipScroll = new HorizontalScrollView(this);
+        chipScroll.setHorizontalScrollBarEnabled(false);
+        chipScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        chipScroll.setClipToPadding(false);
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setGravity(Gravity.CENTER_VERTICAL);
+        String[] labels = {"全部", "今天", "明天", "待确认"};
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            TextView tab = chip(labels[i]);
+            tab.setOnClickListener(v -> {
+                scope = Engine.CardScope.ALL;
+                window = Engine.CardWindow.values()[index];
+                resetCardPage();
+            });
+            windowTabs[i] = tab;
+            LinearLayout.LayoutParams tlp = lp(-2, dp(this, 36));
+            tlp.rightMargin = dp(this, 8);
+            tabs.addView(tab, tlp);
         }
-        LinearLayout.LayoutParams tabsLp=new LinearLayout.LayoutParams(-1,-2);tabsLp.topMargin=dp(this,10);wrap.addView(tabs,tabsLp);
+        stateFilter = chip("状态");
+        stateFilter.setContentDescription("待办状态筛选");
+        stateFilter.setOnClickListener(v -> showFilterMenu());
+        tabs.addView(stateFilter, lp(-2, dp(this, 36)));
+        chipScroll.addView(tabs);
+        LinearLayout.LayoutParams tabsLp = lp(-1, -2);
+        tabsLp.topMargin = dp(this, 12);
+        wrap.addView(chipScroll, tabsLp);
         return wrap;
     }
 
-    private void showFilterMenu(){
-        String[] labels={"全部事项","未完成","已过期","已完成"};
-        new AlertDialog.Builder(this).setTitle("查看事项").setSingleChoiceItems(labels,
-                window==Engine.CardWindow.ANY?scope.ordinal():-1,(d,which)->{
-                    scope=Engine.CardScope.values()[which];window=Engine.CardWindow.ANY;d.dismiss();resetCardPage();
-                }).setNegativeButton("取消",null).show();
+    private TextView chip(String text) {
+        TextView t = uiText(text, 14, Ui.TEXT, true);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(this, 14), 0, dp(this, 14), 0);
+        return t;
     }
 
-    private void updateWindowTabs(Engine shown,long now){
-        int[] counts=new int[4];
-        for(Engine.Card c:shown.all()){
+    private void styleChip(TextView chip, CharSequence label, String count, boolean selected) {
+        SpannableString s = new SpannableString(count == null ? label : label + "  " + count);
+        if (count != null) {
+            int start = s.length() - count.length();
+            s.setSpan(new ForegroundColorSpan(selected ? Ui.withAlpha(Color.WHITE, 170) : Ui.MUTE),
+                    start, s.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        chip.setText(s);
+        chip.setTextColor(selected ? Color.WHITE : Ui.TEXT);
+        GradientDrawable bg = selected ? Ui.round(this, Ui.TEXT, 18) : Ui.round(this, Ui.CARD, 18);
+        if (!selected) bg.setStroke(1, Ui.LINE);
+        chip.setBackground(Ui.ripple(this, bg, Ui.press(), 18));
+        chip.setSelected(selected);
+    }
+
+    private void showFilterMenu() {
+        String[] labels = {"全部事项", "未完成", "已过期", "已完成"};
+        alert().setTitle("按状态查看").setSingleChoiceItems(labels,
+                window == Engine.CardWindow.ANY ? scope.ordinal() : -1, (d, which) -> {
+                    scope = Engine.CardScope.values()[which];
+                    window = Engine.CardWindow.ANY;
+                    d.dismiss();
+                    resetCardPage();
+                }).setNegativeButton("取消", null).show();
+    }
+
+    private void updateWindowTabs(Engine shown, long now) {
+        int[] counts = new int[4];
+        for (Engine.Card c : shown.all()) {
             counts[0]++;
-            String bucket=TodayView.bucket(c.deadline,c.needsConfirm,c.done,now);
-            if("今天".equals(bucket))counts[1]++;
-            else if("明天".equals(bucket))counts[2]++;
-            else if("待确认".equals(bucket))counts[3]++;
+            String bucket = TodayView.bucket(c.deadline, c.needsConfirm, c.done, now);
+            if ("今天".equals(bucket)) counts[1]++;
+            else if ("明天".equals(bucket)) counts[2]++;
+            else if ("待确认".equals(bucket)) counts[3]++;
         }
-        String[] labels={"全部","今天","明天","待确认"};
-        for(int i=0;i<windowTabs.length;i++){
-            boolean selected=scope==Engine.CardScope.ALL && window.ordinal()==i;
-            TextView tab=windowTabs[i];tab.setText(labels[i]+" "+counts[i]);
-            tab.setTextColor(selected?Ui.BLUE:Ui.SUB);
-            tab.setBackground(Ui.ripple(this,Ui.round(this,selected?Color.WHITE:Color.TRANSPARENT,12),Ui.withAlpha(Ui.BLUE,35),12));
+        String[] labels = {"全部", "今天", "明天", "待确认"};
+        for (int i = 0; i < windowTabs.length; i++) {
+            boolean selected = scope == Engine.CardScope.ALL && window.ordinal() == i;
+            styleChip(windowTabs[i], labels[i], String.valueOf(counts[i]), selected);
         }
-        stateFilter.setText(scope==Engine.CardScope.ALL?"筛选":new String[]{"筛选","未完成","已过期","已完成"}[scope.ordinal()]);
-        stateFilter.setTextColor(scope==Engine.CardScope.ALL?Ui.SUB:Ui.BLUE);
+        boolean scoped = scope != Engine.CardScope.ALL;
+        String stateLabel = scoped ? new String[]{"状态", "未完成", "已过期", "已完成"}[scope.ordinal()] : "状态";
+        styleChip(stateFilter, stateLabel + " ▾", null, scoped);
+    }
+
+    /** 大标题和副标题：先说最要紧的一件事，再补充其余数量。 */
+    private void updateHeadline(Engine shown, long now) {
+        int total = 0, open = 0, today = 0, tomorrow = 0, overdue = 0, confirm = 0, urgent = 0, soon = 0;
+        for (Engine.Card c : shown.all()) {
+            total++;
+            if (c.done) continue;
+            open++;
+            String b = TodayView.bucket(c.deadline, c.needsConfirm, false, now);
+            if ("今天".equals(b)) today++;
+            else if ("明天".equals(b)) tomorrow++;
+            else if ("已过期".equals(b)) overdue++;
+            else if ("待确认".equals(b)) confirm++;
+            int u = TodayView.urgency(c.deadline, c.needsConfirm, false, now);
+            if (u >= 2) urgent++;
+            if (u >= 1) soon++;
+        }
+        String head;
+        String num = null;
+        int numColor = Ui.ACCENT;
+        String lead = "";
+        if (total == 0) {
+            head = "还没有待办";
+        } else if (open == 0) {
+            head = "全部搞定了";
+        } else if (today > 0) {
+            num = String.valueOf(today);
+            head = "今天有 " + num + " 件要截止";
+            numColor = urgent > 0 ? Ui.RED : Ui.ORANGE;
+            lead = "today";
+        } else if (overdue > 0) {
+            num = String.valueOf(overdue);
+            head = "有 " + num + " 件已经过期";
+            numColor = Ui.RED;
+            lead = "overdue";
+        } else if (tomorrow > 0) {
+            num = String.valueOf(tomorrow);
+            head = "明天有 " + num + " 件要截止";
+            numColor = soon > 0 ? Ui.ORANGE : Ui.ACCENT;
+            lead = "tomorrow";
+        } else {
+            head = "今天没有截止";
+        }
+        SpannableString s = new SpannableString(head);
+        if (num != null) {
+            int i = head.indexOf(num);
+            s.setSpan(new ForegroundColorSpan(numColor), i, i + num.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        headline.setText(s);
+
+        List<String> parts = new ArrayList<>();
+        if (tomorrow > 0 && !"tomorrow".equals(lead)) parts.add("明天 " + tomorrow + " 件");
+        if (overdue > 0 && !"overdue".equals(lead)) parts.add("已过期 " + overdue + " 件");
+        if (confirm > 0) parts.add("待确认 " + confirm + " 件");
+        if (open > 0) parts.add("共 " + open + " 件未完成");
+        else if (total > 0) parts.add("已完成 " + total + " 件");
+        else parts.add(demo == null && !EngineHolder.listenerConnected
+                ? "开启自动读取后，群里的作业、考试、接龙会自动整理到这里"
+                : "群里出现作业、考试、接龙时，会自动整理到这里");
+        stats.setText(TextUtils.join(" · ", parts));
     }
 
     private void resetCardPage() {
@@ -466,38 +702,35 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         resetCardPage();
     }
 
-    /** 小号描边胶囊：工具栏与列表底部「显示更多」共用，透明底 + 1dp 细描边。 */
+    /** 次级按钮：浅灰填充、墨色文字，按压只加深一点。 */
     Button button(String text, View.OnClickListener l) {
         Button btn = new Button(this);
         btn.setText(text);
-        btn.setTextSize(12);
+        btn.setTextSize(14);
         btn.setAllCaps(false);
-        btn.setTextColor(Ui.SUB);
-        btn.setBackground(Ui.ripple(this, Ui.roundStroke(this, Color.TRANSPARENT, Ui.LINE, 16, 1),
-                Ui.withAlpha(Ui.BLUE, 28), 16));
-        // 真机问题：系统 Button 自带的最小高度 / 最小宽度会把胶囊撑成大灰框，全部清零。
+        btn.setTypeface(Ui.medium());
+        btn.setTextColor(Ui.TEXT);
+        btn.setBackground(Ui.ripple(this, Ui.round(this, Ui.FILL, 12), Ui.press(), 12));
         btn.setMinHeight(0);
         btn.setMinimumHeight(dp(this, 44));
         btn.setMinWidth(0);
         btn.setMinimumWidth(0);
-        // 去掉系统默认的按压阴影动画，浅色界面里只要一颗扁平小胶囊（API 21 起可用）。
         btn.setStateListAnimator(null);
-        // 不继承系统按钮的默认内边距，左右 12dp、上下 7dp 让胶囊看起来紧凑。
-        btn.setPadding(dp(this, 12), dp(this, 7), dp(this, 12), dp(this, 7));
+        btn.setPadding(dp(this, 14), dp(this, 8), dp(this, 14), dp(this, 8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = dp(this, 8);
+        lp.topMargin = dp(this, 8);
         btn.setLayoutParams(lp);
         btn.setOnClickListener(l);
         return btn;
     }
 
-    /** 主行动按钮：品牌蓝实心底 + 白字粗体，只给底部最常用的入口用。 */
+    /** 主按钮：靛蓝实心 + 白字。一个界面只放一个。 */
     Button stylePrimary(Button b) {
-        b.setBackground(Ui.round(this, Ui.BLUE_BG, 14));
-        b.setTextColor(Ui.BLUE);
+        b.setBackground(Ui.ripple(this, Ui.round(this, Ui.ACCENT, 14), Ui.withAlpha(Color.WHITE, 60), 14));
+        b.setTextColor(Color.WHITE);
         b.setTextSize(15);
-        b.setTypeface(null, 1);
+        b.setTypeface(Ui.medium());
         return b;
     }
 
@@ -512,9 +745,10 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         } else {
             demo = null;
         }
+        hideUndo();
         boolean showingDemo = demo != null;
         demoTools.setVisibility(showingDemo ? View.VISIBLE : View.GONE);
-        demoButton.setText(showingDemo ? "退出演示" : "离线演示");
+        demoButton.setText("退出");
         demoUpdate.setVisibility(showingDemo ? View.VISIBLE : View.GONE);
         liveTools.setVisibility(showingDemo ? View.GONE : View.VISIBLE);
         liveFilters.setVisibility(showingDemo ? View.GONE : View.VISIBLE);
@@ -536,56 +770,115 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         }
     }
 
-    /**
-     * 「更多」菜单：把原来挤在工具栏上的次级入口收进一个下拉列表。
-     * 每一项做的事和原按钮的点击回调完全一致，只是换了入口。
-     */
+    /** 「更多」：底部面板，按用途分三组，危险操作单独放最后并标红。 */
     void showMoreMenu() {
-        new AlertDialog.Builder(this)
-                .setItems(new String[]{"自动读取自检", "到期提醒", "我的档案", "通知读取权限",
-                                "通知回放", "诊断日志", "已移除的卡片", "清空本机数据",
-                                demo == null ? "离线演示" : "退出演示"},
-                        (d, which) -> {
-                            switch (which) {
-                                case 0:
-                                    showHealthCheck();
-                                    break;
-                                case 1:
-                                    showDeadlineReminderSettings();
-                                    break;
-                                case 2:
-                                    startActivity(new Intent(this, ProfileActivity.class));
-                                    break;
-                                case 3:
-                                    startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"));
-                                    break;
-                                case 4:
-                                    startReplay();
-                                    break;
-                                case 5:
-                                    showDiagLog();
-                                    break;
-                                case 6:
-                                    showRemovedCards();
-                                    break;
-                                case 8:
-                                    toggleDemo();
-                                    break;
-                                case 7:
-                                    new AlertDialog.Builder(this)
-                                            .setTitle("清空待办和近期消息？")
-                                            .setMessage("会清空本机的全部待办、已移除卡片，以及这次运行中用于识别的近期消息。")
-                                            .setPositiveButton("清空", (dialog, w) -> {
-                                                engine.clearLocalData();
-                                                EngineHolder.save(this);
-                                            })
-                                            .setNegativeButton("取消", null)
-                                            .show();
-                                    break;
-                                default:
-                                    break;
-                            }
-                        }).show();
+        android.app.Dialog[] holder = new android.app.Dialog[1];
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.addView(sheetTitle("更多"));
+        menuSection(body, "自动读取");
+        menuRow(body, holder, "自动读取自检", "检查权限、连接和后台限制", Ui.TEXT, this::showHealthCheck);
+        menuRow(body, holder, "通知读取权限", "系统设置里的通知使用权", Ui.TEXT,
+                () -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")));
+        menuRow(body, holder, "诊断日志", "最近 30 条读取记录", Ui.TEXT, this::showDiagLog);
+        menuSection(body, "事项");
+        menuRow(body, holder, "到期提醒", ReminderReceiver.isEnabled(this) ? "已开启 · 到期前两小时提醒" : "已关闭",
+                Ui.TEXT, this::showDeadlineReminderSettings);
+        menuRow(body, holder, "已移除的卡片", "误删的卡片可以在这里恢复", Ui.TEXT, this::showRemovedCards);
+        menuRow(body, holder, "我的档案", "姓名、班级、课程，只存在本机", Ui.TEXT,
+                () -> startActivity(new Intent(this, ProfileActivity.class)));
+        menuSection(body, "演示");
+        menuRow(body, holder, demo == null ? "离线演示" : "退出演示", "用样例群消息体验作业、考试和接龙", Ui.TEXT, this::toggleDemo);
+        menuRow(body, holder, "通知回放", "打开消息回放器，模拟真实通知", Ui.TEXT, this::startReplay);
+        View gap = new View(this);
+        body.addView(gap, lp(-1, dp(this, 8)));
+        menuRow(body, holder, "清空本机数据", "清空全部待办、已移除卡片和近期消息", Ui.RED, () ->
+                alert()
+                        .setTitle("清空待办和近期消息？")
+                        .setMessage("会清空本机的全部待办、已移除卡片，以及这次运行中用于识别的近期消息。")
+                        .setPositiveButton("清空", (dialog, w) -> {
+                            engine.clearLocalData();
+                            EngineHolder.save(this);
+                        })
+                        .setNegativeButton("取消", null)
+                        .show());
+        holder[0] = showSheet(body, null);
+    }
+
+    TextView sheetTitle(String text) {
+        TextView t = uiText(text, 18, Ui.TEXT, true);
+        t.setPadding(dp(this, 4), dp(this, 12), 0, dp(this, 4));
+        return t;
+    }
+
+    void menuSection(LinearLayout body, String name) {
+        TextView t = uiText(name, 12, Ui.MUTE, true);
+        t.setPadding(dp(this, 4), dp(this, 18), 0, dp(this, 6));
+        body.addView(t);
+    }
+
+    void menuRow(LinearLayout body, android.app.Dialog[] holder, String label, String hint, int color, Runnable action) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(this, 56));
+        row.setPadding(dp(this, 4), dp(this, 10), dp(this, 4), dp(this, 10));
+        row.setBackground(Ui.ripple(this, null, Ui.press(), 12));
+        row.addView(uiText(label, 16, color, false));
+        if (!TextUtils.isEmpty(hint)) {
+            TextView h = uiText(hint, 12, Ui.MUTE, false);
+            h.setPadding(0, dp(this, 5), 0, 0);
+            row.addView(h);
+        }
+        row.setOnClickListener(v -> {
+            if (holder[0] != null) holder[0].dismiss();
+            action.run();
+        });
+        body.addView(row, lp(-1, -2));
+    }
+
+    /**
+     * 通用底部面板：顶部圆角、从下往上滑入、最高占屏 88%，内容超出时可滚动，footer 固定在底部。
+     */
+    android.app.Dialog showSheet(View content, View footer) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        final int max = (int) (getResources().getDisplayMetrics().heightPixels * 0.88f);
+        LinearLayout sheet = new LinearLayout(this) {
+            @Override
+            protected void onMeasure(int widthSpec, int heightSpec) {
+                int size = View.MeasureSpec.getSize(heightSpec);
+                int cap = View.MeasureSpec.getMode(heightSpec) == View.MeasureSpec.UNSPECIFIED ? max : Math.min(size, max);
+                super.onMeasure(widthSpec, View.MeasureSpec.makeMeasureSpec(cap, View.MeasureSpec.AT_MOST));
+            }
+        };
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(dp(this, 20), dp(this, 10), dp(this, 20), dp(this, 18));
+        sheet.setBackground(Ui.topRound(this, Ui.CARD, 26));
+        View handle = new View(this);
+        handle.setBackground(Ui.round(this, Ui.LINE, 3));
+        LinearLayout.LayoutParams handleLp = lp(dp(this, 36), dp(this, 4));
+        handleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        sheet.addView(handle, handleLp);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        scroll.addView(content);
+        sheet.addView(scroll, new LinearLayout.LayoutParams(-1, -2, 1f));
+        if (footer != null) sheet.addView(footer);
+        dialog.setContentView(sheet);
+        dialog.setCanceledOnTouchOutside(true);
+        dialog.show();
+        android.view.Window w = dialog.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+            w.setGravity(Gravity.BOTTOM);
+            w.setLayout(-1, -2);
+            w.setDimAmount(0.4f);
+            w.setWindowAnimations(android.R.style.Animation_InputMethod);
+            w.setNavigationBarColor(Ui.CARD);
+        }
+        return dialog;
     }
 
     /**
@@ -628,7 +921,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         boolean needBattery = hasFix(r, "BATTERY");
 
         // 标题直接用 HealthCheck 给的一句话结论（正常 / 发现 N 个问题）。
-        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+        AlertDialog.Builder builder = alert()
                 .setTitle(r.summary())
                 .setMessage(body.toString())
                 // 负按钮固定是「知道了」，只关窗不做动作。
@@ -751,7 +1044,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         scroll.addView(text);
 
         // 弹窗本身只留一个「关闭」，看完就走。
-        new AlertDialog.Builder(this)
+        alert()
                 .setTitle("诊断日志")
                 .setView(scroll)
                 .setPositiveButton("关闭", null)
@@ -773,27 +1066,24 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         uiHandler.removeCallbacks(searchRefresh);
         renderQueued = false;
         long now = System.currentTimeMillis();
-        // 每次重绘都重算副标题：跨过中午、傍晚后回到前台，日期和问候词都能跟着变。
         if (sub != null) sub.setText(subLine());
         cardList.removeAllViews();
         Engine shown = demo == null ? engine : demo.engine;
-        // 顶部改成用户看得懂的一句话：今天几件、明天几件、有多少过期和待确认。
-        stats.setText(TodayView.summary(shown.all(), now));
-        updateWindowTabs(shown,now);
-        // 开发者统计整句不删，改为长按顶部统计句时用 Toast 展示（演示模式下同样适用）。
-        stats.setOnLongClickListener(v -> {
-            // 原文拼接逻辑原样保留，只是从常显改成按需查看。
+        updateHeadline(shown, now);
+        updateWindowTabs(shown, now);
+        // 开发者统计：长按大标题查看。
+        View.OnLongClickListener devStats = v -> {
             Toast.makeText(MainActivity.this, "处理 " + shown.nIn + " 条 · 丢弃噪声 " + shown.nNoise
-                    + " · 进模型 " + shown.nLevel3 + " · 待办 " + shown.all().size()
-                    + (shown.nPromoted > 0 ? (" · 回复潮提升 " + shown.nPromoted) : ""),
+                            + " · 进模型 " + shown.nLevel3 + " · 待办 " + shown.all().size()
+                            + (shown.nPromoted > 0 ? (" · 回复潮提升 " + shown.nPromoted) : ""),
                     Toast.LENGTH_LONG).show();
             return true;
-        });
-        // 撞车提醒：取最近的一组（7 天内、与前一张相差 3 小时内、至少两张）显示在横幅上。
-        // 演示模式和真实模式都用 shown，所以两种数据源行为一致。
+        };
+        headline.setOnLongClickListener(devStats);
+        stats.setOnLongClickListener(devStats);
         ClashPlan.Clash clash = ClashPlan.nearest(shown.all(), now);
         if (clash != null) {
-            clashBanner.setText("⚠ " + clash.text());
+            clashBanner.setText("撞车提醒 · " + clash.text() + "  ›");
             clashBanner.setVisibility(View.VISIBLE);
         } else {
             clashBanner.setVisibility(View.GONE);
@@ -801,13 +1091,10 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         if (demo == null) {
             updateNotifStatus();
         } else {
-            notifStatus.setText("● 离线演示 · 以下为样例群消息");
-            // 演示态同样用成功绿，保持状态行颜色语义一致。
-            notifStatus.setTextColor(Ui.HERO_STATUS);
-            notifStatus.setBackground(null);
-            notifStatus.setPadding(0, dp(this, 6), 0, dp(this, 4));
+            notifStatus.setText(statusText("离线演示", Ui.ACCENT));
+            notifStatus.setTextColor(Ui.ACCENT);
+            notifStatus.setBackground(Ui.ripple(this, Ui.round(this, Ui.ACCENT_BG, 15), Ui.press(), 15));
         }
-        // 底部栏每次刷新都按当前连接状态重算：只有「未连接且不是演示」才露出「开启自动读取」。
         if (liveTools != null) {
             boolean needSetup = demo == null && !EngineHolder.listenerConnected;
             liveTools.setVisibility(needSetup ? View.VISIBLE : View.GONE);
@@ -818,23 +1105,28 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 ? shown.queryCards(keywords, scope, window, visibleLimit + 1, now)
                 : shown.ranked(PAGE_SIZE, now);
         if (list.isEmpty()) {
+            boolean filtered = !keywords.trim().isEmpty() || scope != Engine.CardScope.ALL || window != Engine.CardWindow.ANY;
             if (demo != null) {
-                empty.setText("演示卡片已清理。退出后可重新体验。");
-            } else if (!keywords.trim().isEmpty() || scope != Engine.CardScope.ALL || window != Engine.CardWindow.ANY) {
-                empty.setText("没有符合当前搜索或筛选的卡片。");
+                emptyIcon.setBackground(new Ui.CheckCircle(this, Ui.ACCENT, Ui.ACCENT, 52, true));
+                emptyTitle.setText("演示卡片已清理");
+                empty.setText("退出演示后可以重新体验。");
+            } else if (filtered) {
+                emptyIcon.setBackground(emptySearchIcon());
+                emptyTitle.setText("没有找到");
+                empty.setText("换个关键词，或者切回「全部」看看。");
+            } else if (EngineHolder.listenerConnected) {
+                emptyIcon.setBackground(new Ui.CheckCircle(this, Ui.GREEN, Ui.GREEN, 52, true));
+                emptyTitle.setText("暂时没有要做的事");
+                empty.setText("自动读取已开启。\n群里有作业、考试、接龙时，会自动出现在这里。");
             } else {
-                // 空状态说明自动读取的授权或等待状态。
-                if (EngineHolder.listenerConnected) {
-                    empty.setText("自动读取已开启。\n群里有作业、考试、接龙时，会自动出现在这里。");
-                } else {
-                    empty.setText("还没有待办。\n开启自动读取后，群里的作业、考试、接龙会自动出现在这里，自动识别并整理。");
-                }
+                emptyIcon.setBackground(emptySearchIcon());
+                emptyTitle.setText("还没有待办");
+                empty.setText("开启自动读取后，群里的作业、考试、接龙\n会自动整理到这里，不用再爬楼。");
             }
-            cardList.addView(empty);
+            cardList.addView(emptyBox);
             return;
         }
         int displayed = Math.min(visibleLimit, list.size());
-        // 今日视图：先取前 displayed 张卡，再按 TodayView.ORDER 的固定分组顺序展示。
         Map<String, List<Engine.Card>> groups = new HashMap<>();
         for (int i = 0; i < displayed; i++) {
             Engine.Card card = list.get(i);
@@ -844,39 +1136,30 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         for (int g = 0; g < TodayView.ORDER.length; g++) {
             String groupName = TodayView.ORDER[g];
             List<Engine.Card> group = groups.get(groupName);
-            // 这一组没卡就不出标题，避免出现空分组。
             if (group == null) continue;
             cardList.addView(groupHeader(groupName, group.size()));
-            // 整组收进一张白卡：圆角 16dp + 极淡投影，行与行之间用细线分隔。
-            LinearLayout groupBox = new LinearLayout(this);
-            groupBox.setOrientation(LinearLayout.VERTICAL);
-            groupBox.setBackground(Ui.roundStroke(this, Ui.CARD, Ui.LINE, 20, 1));
-
-            LinearLayout.LayoutParams groupLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            groupLp.bottomMargin = dp(this, 4);
-            groupBox.setLayoutParams(groupLp);
-            for (int i = 0; i < group.size(); i++) {
-                // 第 2 行起先垫一条分隔线，从文字起始处（52dp）起画，不做通栏。
-                if (i > 0) {
-                    View line = Ui.hairline(this);
-                    LinearLayout.LayoutParams lineLp = new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, 1);
-                    lineLp.leftMargin = dp(this, 52);
-                    groupBox.addView(line, lineLp);
-                }
-                groupBox.addView(cardView(group.get(i)));
-            }
-            cardList.addView(groupBox);
+            for (Engine.Card card : group) cardList.addView(cardView(card, now));
         }
         if (list.size() > displayed) {
-            cardList.addView(button("显示更多", v -> {
+            Button moreBtn = button("显示更多", v -> {
                 int y = listScroll.getScrollY();
                 visibleLimit += PAGE_SIZE;
                 render();
                 listScroll.post(() -> listScroll.scrollTo(0, y));
-            }));
+            });
+            LinearLayout.LayoutParams moreLp = lp(-1, dp(this, 46));
+            moreLp.topMargin = dp(this, 8);
+            cardList.addView(moreBtn, moreLp);
         }
+    }
+
+    private Drawable emptySearchIcon() {
+        GradientDrawable bg = Ui.disc(this, Ui.FILL);
+        Drawable glyph = Ui.searchGlyph(this, Ui.SUB, 24);
+        android.graphics.drawable.LayerDrawable layer = new android.graphics.drawable.LayerDrawable(new Drawable[]{bg, glyph});
+        int inset = dp(this, 14);
+        layer.setLayerInset(1, inset, inset, inset, inset);
+        return layer;
     }
 
     /** 点击撞车横幅：逐行列出这一组里每张卡的标题和截止时间。 */
@@ -897,150 +1180,206 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             body.append("· ").append(c.displayTitle()).append("  ")
                     .append(Engine.humanDeadline(c.deadline));
         }
-        new AlertDialog.Builder(this)
+        alert()
                 .setTitle("这几件事挤在一起")
                 .setMessage(body.toString())
                 .setPositiveButton("知道了", null)
                 .show();
     }
 
-    /** 分组标题：只留「组名 + 数量」两段小字，压缩上下留白，减少列表被切碎的感觉。 */
+    /** 分组标题：组名 + 数量，「已过期」标红、「待确认」标琥珀，其余墨色。 */
     View groupHeader(String name, int count) {
         LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        // 基线对齐：组名和数量字号相同，底部对齐看起来更稳。
         row.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView label = new TextView(this);
-        label.setText(name);
-        label.setTextSize(12);
-        label.setTypeface(null, 1);
-        label.setTextColor(Ui.SUB);
-        label.setIncludeFontPadding(false);
-        row.addView(label);
-
-        // 数量紧跟在组名后面，颜色再浅一档，读的时候先看到组名。
-        TextView num = new TextView(this);
-        num.setText(String.valueOf(count));
-        num.setTextSize(12);
-        num.setTextColor(Ui.MUTE);
-        num.setIncludeFontPadding(false);
-        LinearLayout.LayoutParams numLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        numLp.leftMargin = dp(this, 5);
+        int color = "已过期".equals(name) ? Ui.RED : "待确认".equals(name) ? Ui.AMBER_TX
+                : "已完成".equals(name) ? Ui.MUTE : Ui.TEXT;
+        row.addView(uiText(name, 15, color, true));
+        TextView num = uiText(String.valueOf(count), 13, Ui.MUTE, false);
+        LinearLayout.LayoutParams numLp = lp(-2, -2);
+        numLp.leftMargin = dp(this, 6);
         row.addView(num, numLp);
-
-        // 组与组之间靠上留白分开：左缩进 4dp 和卡片边缘错开一点，显得是标签而不是卡片内容。
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams lp = lp(-1, -2);
         lp.leftMargin = dp(this, 4);
-        lp.topMargin = dp(this, 14);
-        lp.bottomMargin = dp(this, 6);
+        lp.topMargin = dp(this, 22);
+        lp.bottomMargin = dp(this, 10);
         row.setLayoutParams(lp);
         return row;
     }
 
     /**
-     * 组内的一行：左边完成圈，右边内容列。
-     * 行本身不带背景、描边和下边距，白卡和行间距都由外层 groupBox 统一处理。
+     * 一张事项卡：左边完成圈（颜色 = 时间压力），右边三行信息：
+     * 标题 / 截止（类型标签 + 倒计时）/ 来源（应用图标 · 群名 · 发送者），必要时补一行提交方式、地点、携带物。
+     * 点卡片看详情，长按修正，点圆圈完成（带动画和撤销）。
      */
-    View cardView(Engine.Card c) {
-        LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(this,16),dp(this,16),dp(this,16),dp(this,10));
-        row.setBackground(Ui.ripple(this,null,Ui.withAlpha(Ui.BLUE,22),20));
-        LinearLayout origin=new LinearLayout(this);origin.setGravity(Gravity.CENTER_VERTICAL);
-        View pill=sourcePill(c);LinearLayout.LayoutParams pillLp=new LinearLayout.LayoutParams(-2,-2);origin.addView(pill,pillLp);
-        TextView group=uiText(c.groupName==null?"":c.groupName,11,Ui.SUB,false);
-        group.setSingleLine(true);group.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams groupLp=new LinearLayout.LayoutParams(0,-2,1);groupLp.leftMargin=dp(this,9);origin.addView(group,groupLp);
-        row.addView(origin);
-        TextView title=uiText(c.displayTitle(),17,c.done?Ui.SUB:Ui.TEXT,true);
-        title.setMaxLines(3);title.setEllipsize(TextUtils.TruncateAt.END);title.setLineSpacing(dp(this,2),1.05f);
-        title.setContentDescription(c.displayTitle());
-        if(c.done)title.setPaintFlags(title.getPaintFlags()|Paint.STRIKE_THRU_TEXT_FLAG);
-        LinearLayout.LayoutParams titleLp=new LinearLayout.LayoutParams(-1,-2);titleLp.topMargin=dp(this,12);row.addView(title,titleLp);
-        if(!c.done){
-            String time=c.deadlineHint()!=null?c.deadlineHint()+" · 时刻待确认"
-                    :c.deadline==0?"时间待确认 · 点开补充":Engine.humanDeadline(c.deadline)+" · "+TodayView.countdown(c.deadline,System.currentTimeMillis());
-            TextView due=uiText(time,12,c.needsConfirm?Ui.AMBER_TX:Ui.BLUE,true);
-            due.setBackground(Ui.round(this,c.needsConfirm?Ui.AMBER_BG:Ui.BLUE_BG,8));
-            due.setPadding(dp(this,9),dp(this,7),dp(this,9),dp(this,7));
-            LinearLayout.LayoutParams dueLp=new LinearLayout.LayoutParams(-2,-2);dueLp.topMargin=dp(this,10);row.addView(due,dueLp);
+    View cardView(Engine.Card c, long now) {
+        int urgency = TodayView.urgency(c.deadline, c.needsConfirm, c.done, now);
+        boolean unsure = c.needsConfirm || c.deadline == 0 || c.deadlineHint() != null;
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setPadding(dp(this, 4), dp(this, 16), dp(this, 16), dp(this, 16));
+        GradientDrawable face = Ui.round(this, Ui.CARD, 18);
+        face.setStroke(1, Ui.LINE);
+        card.setBackground(Ui.ripple(this, face, Ui.press(), 18));
+
+        int ringColor = c.done ? Ui.MUTE : unsure ? Ui.AMBER_TX
+                : urgency >= 1 ? Ui.urgencyColor(urgency) : Color.parseColor("#B9B7B0");
+        Ui.CheckCircle circle = new Ui.CheckCircle(this, ringColor, c.done ? Ui.MUTE : Ui.GREEN, 22, c.done);
+        FrameLayout checkZone = new FrameLayout(this);
+        View check = new View(this);
+        check.setBackground(circle);
+        checkZone.addView(check, new FrameLayout.LayoutParams(dp(this, 22), dp(this, 22), Gravity.CENTER));
+        checkZone.setBackground(Ui.rippleCircle(this, Ui.press()));
+        checkZone.setContentDescription((c.done ? "恢复待办：" : "标记完成：") + c.displayTitle());
+        LinearLayout.LayoutParams checkLp = lp(dp(this, 48), dp(this, 48));
+        checkLp.topMargin = -dp(this, 13);
+        card.addView(checkZone, checkLp);
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        if (c.done) body.setAlpha(0.6f);
+
+        TextView title = uiText(c.displayTitle(), 16, c.done ? Ui.SUB : Ui.TEXT, true);
+        title.setMaxLines(2);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        title.setLineSpacing(dp(this, 3), 1f);
+        if (c.done) title.setPaintFlags(title.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
+        body.addView(title);
+
+        if (!c.done) {
+            LinearLayout dueRow = new LinearLayout(this);
+            dueRow.setGravity(Gravity.CENTER_VERTICAL);
+            TextView kindTag = kindTag(c.kind);
+            if (kindTag != null) {
+                LinearLayout.LayoutParams kLp = lp(-2, -2);
+                kLp.rightMargin = dp(this, 7);
+                dueRow.addView(kindTag, kLp);
+            }
+            String time = c.deadlineHint() != null ? c.deadlineHint() + " · 时刻待确认"
+                    : c.deadline == 0 ? "时间待确认 · 点开补充"
+                    : Engine.humanDeadline(c.deadline) + " · " + TodayView.countdown(c.deadline, now);
+            int dueColor = unsure ? Ui.AMBER_TX : urgency >= 1 ? Ui.urgencyColor(urgency) : Ui.SUB;
+            TextView due = uiText(time, 13, dueColor, true);
+            due.setSingleLine(true);
+            due.setEllipsize(TextUtils.TruncateAt.END);
+            dueRow.addView(due, new LinearLayout.LayoutParams(0, -2, 1));
+            if (c.updated) {
+                TextView upd = Ui.tag(this, "已更新", Ui.ACCENT, Ui.ACCENT_BG);
+                LinearLayout.LayoutParams uLp = lp(-2, -2);
+                uLp.leftMargin = dp(this, 6);
+                dueRow.addView(upd, uLp);
+            }
+            LinearLayout.LayoutParams dueLp = lp(-1, -2);
+            dueLp.topMargin = dp(this, 8);
+            body.addView(dueRow, dueLp);
         }
-        if("exam".equals(c.kind) && !TextUtils.isEmpty(c.bring)){
-            TextView bring=uiText("需携带  "+c.bring,12,Ui.SUB,false);bring.setPadding(0,dp(this,8),0,0);row.addView(bring);
+
+        LinearLayout meta = new LinearLayout(this);
+        meta.setGravity(Gravity.CENTER_VERTICAL);
+        meta.addView(sourceMark(c, 15));
+        StringBuilder metaText = new StringBuilder(sourceName(c));
+        if (!TextUtils.isEmpty(c.groupName)) metaText.append(" · ").append(c.groupName);
+        if (!TextUtils.isEmpty(c.sender)) metaText.append(" · ").append(c.sender);
+        TextView metaLine = uiText(metaText.toString(), 12, Ui.SUB, false);
+        metaLine.setSingleLine(true);
+        metaLine.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams mtLp = new LinearLayout.LayoutParams(0, -2, 1);
+        mtLp.leftMargin = dp(this, 6);
+        meta.addView(metaLine, mtLp);
+        LinearLayout.LayoutParams metaLp = lp(-1, -2);
+        metaLp.topMargin = dp(this, 10);
+        body.addView(meta, metaLp);
+
+        List<String> extra = new ArrayList<>();
+        if (!TextUtils.isEmpty(c.channel) && !"jielong".equals(c.kind)) extra.add("提交到 " + c.channel);
+        if ("exam".equals(c.kind) && !TextUtils.isEmpty(c.place)) extra.add("地点 " + c.place);
+        if ("exam".equals(c.kind) && !TextUtils.isEmpty(c.bring)) extra.add("带 " + c.bring);
+        if (!extra.isEmpty() && !c.done) {
+            TextView ex = uiText(TextUtils.join("  ·  ", extra), 12, Ui.SUB, false);
+            ex.setMaxLines(2);
+            ex.setEllipsize(TextUtils.TruncateAt.END);
+            ex.setLineSpacing(dp(this, 2), 1f);
+            LinearLayout.LayoutParams exLp = lp(-1, -2);
+            exLp.topMargin = dp(this, 6);
+            body.addView(ex, exLp);
         }
-        LinearLayout footer=new LinearLayout(this);footer.setGravity(Gravity.CENTER_VERTICAL);
-        String recipient=TextUtils.isEmpty(c.channel)?(TextUtils.isEmpty(c.sender)?"查看消息详情":c.sender):"提交到："+c.channel;
-        TextView who=uiText(recipient+(c.updated?" · 已更新":""),12,Ui.SUB,false);who.setMaxLines(1);who.setEllipsize(TextUtils.TruncateAt.END);
-        footer.addView(who,new LinearLayout.LayoutParams(0,-2,1));
-        TextView done=uiText(c.done?"✓ 已完成":"○ 完成",13,c.done?Ui.BLUE:Ui.SUB,true);
-        done.setGravity(Gravity.CENTER);done.setPadding(dp(this,12),0,0,0);
-        done.setContentDescription((c.done?"恢复卡片：":"完成卡片：")+c.displayTitle());
-        done.setBackground(Ui.ripple(this,null,Ui.withAlpha(Ui.BLUE,30),12));
-        done.setOnClickListener(v->toggleDone(c));footer.addView(done,new LinearLayout.LayoutParams(dp(this,80),dp(this,44)));
-        LinearLayout.LayoutParams footerLp=new LinearLayout.LayoutParams(-1,-2);footerLp.topMargin=dp(this,4);row.addView(footer,footerLp);
-        if(!TextUtils.isEmpty(c.reason) && c.deadlineHint()==null){
-            TextView reason=uiText(c.reason,11,Ui.AMBER_TX,false);reason.setPadding(0,0,0,dp(this,5));row.addView(reason);
+        if (!c.done && !TextUtils.isEmpty(c.reason) && c.deadlineHint() == null) {
+            TextView reason = uiText(c.reason, 12, Ui.AMBER_TX, false);
+            reason.setMaxLines(2);
+            reason.setEllipsize(TextUtils.TruncateAt.END);
+            reason.setPadding(dp(this, 8), dp(this, 6), dp(this, 8), dp(this, 6));
+            reason.setBackground(Ui.round(this, Ui.AMBER_BG, 8));
+            LinearLayout.LayoutParams rLp = lp(-2, -2);
+            rLp.topMargin = dp(this, 8);
+            body.addView(reason, rLp);
         }
-        row.setOnClickListener(v->showSource(c));row.setOnLongClickListener(v->{showCardEdit(c);return true;});
-        return row;
+        card.addView(body, new LinearLayout.LayoutParams(0, -2, 1));
+
+        checkZone.setOnClickListener(v -> {
+            if (c.done) toggleDone(c);
+            else animateComplete(card, circle, body, c);
+        });
+        card.setOnClickListener(v -> showSource(c));
+        card.setOnLongClickListener(v -> {
+            v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            showCardEdit(c);
+            return true;
+        });
+        LinearLayout.LayoutParams cardLp = lp(-1, -2);
+        cardLp.bottomMargin = dp(this, 10);
+        card.setLayoutParams(cardLp);
+        return card;
     }
 
-    /**
-     * 来源胶囊：优先用应用真实图标，取不到时退回带品牌色的文字徽标。
-     * 应用名始终跟着图标一起出现，用户不必靠图标猜来源。
-     */
-    View sourcePill(Engine.Card c) {
+    /** 卡片类型标签：考试紫、接龙青，普通作业不加标签。 */
+    TextView kindTag(String kind) {
+        if ("exam".equals(kind)) return Ui.tag(this, "考试", Ui.VIOLET, Ui.VIOLET_BG);
+        if ("jielong".equals(kind)) return Ui.tag(this, "接龙", Ui.TEAL, Ui.TEAL_BG);
+        return null;
+    }
+
+    /** 点完成圈：圆圈填充 + 对勾描出，内容淡出，0.4 秒后真正标记并给出撤销。 */
+    void animateComplete(View card, Ui.CheckCircle circle, View body, Engine.Card c) {
+        if (Boolean.TRUE.equals(card.getTag())) return;
+        card.setTag(Boolean.TRUE);
+        card.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+        ValueAnimator anim = ValueAnimator.ofFloat(0f, 1f);
+        anim.setDuration(280);
+        anim.setInterpolator(new DecelerateInterpolator());
+        anim.addUpdateListener(a -> circle.setProgress((float) a.getAnimatedValue()));
+        anim.start();
+        body.animate().alpha(0.4f).setDuration(260).start();
+        uiHandler.postDelayed(() -> {
+            if (!c.done) toggleDone(c);
+        }, 420);
+    }
+
+    /** 来源小图标：应用真实图标优先，取不到用品牌色文字徽标。 */
+    View sourceMark(Engine.Card c, float sizeDp) {
         String name = sourceName(c);
         String pkg = c.sourcePackageName();
         pkg = pkg == null ? "" : pkg.trim();
-
-        LinearLayout pill = new LinearLayout(this);
-        pill.setOrientation(LinearLayout.HORIZONTAL);
-        pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setBackground(Ui.round(this, Ui.SURFACE2, 20));
-        pill.setPadding(dp(this, 6), dp(this, 3), dp(this, 10), dp(this, 3));
-
-        int size = dp(this, 18);
+        int size = dp(this, sizeDp);
         Drawable icon = sourceIcon(pkg);
         if (icon != null) {
-            // 圆角小图标：18dp 容器 + 圆角裁剪，避免方形应用图标打破胶囊圆角。
             ImageView image = new ImageView(this);
             image.setImageDrawable(icon);
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            image.setBackground(Ui.round(this, Ui.CARD, 5));
+            image.setBackground(Ui.round(this, Ui.CARD, 4));
             image.setClipToOutline(true);
-            pill.addView(image, new LinearLayout.LayoutParams(size, size));
-        } else {
-            TextView badge = new TextView(this);
-            badge.setText(sourceBadge(name, pkg));
-            badge.setTextSize(10);
-            badge.setTypeface(Typeface.DEFAULT_BOLD);
-            badge.setTextColor(Color.WHITE);
-            badge.setGravity(Gravity.CENTER);
-            badge.setIncludeFontPadding(false);
-            badge.setBackground(Ui.round(this, sourceBadgeColor(name, pkg), 5));
-            pill.addView(badge, new LinearLayout.LayoutParams(size, size));
+            image.setLayoutParams(new LinearLayout.LayoutParams(size, size));
+            return image;
         }
-
-        TextView label = new TextView(this);
-        label.setText(name);
-        label.setTextSize(12);
-        label.setTextColor(Ui.SUB);
-        label.setIncludeFontPadding(false);
-        label.setMaxLines(1);
-        label.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        labelLp.leftMargin = dp(this, 5);
-        pill.addView(label, labelLp);
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(this, 7);
-        pill.setLayoutParams(lp);
-        return pill;
+        TextView badge = new TextView(this);
+        badge.setText(sourceBadge(name, pkg));
+        badge.setTextSize(sizeDp * 0.55f);
+        badge.setTypeface(Typeface.DEFAULT_BOLD);
+        badge.setTextColor(Color.WHITE);
+        badge.setGravity(Gravity.CENTER);
+        badge.setIncludeFontPadding(false);
+        badge.setBackground(Ui.round(this, sourceBadgeColor(name, pkg), 4));
+        badge.setLayoutParams(new LinearLayout.LayoutParams(size, size));
+        return badge;
     }
 
     /**
@@ -1107,83 +1446,269 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         return Ui.BLUE;
     }
 
+    /**
+     * 事项详情（底部面板）：来源 → 标题 → 截止时间块 → 关键信息 → 快捷操作 → 原始消息，
+     * 底部固定一个「标记完成」主按钮。
+     */
     void showSource(Engine.Card c) {
-        android.app.Dialog dialog=new android.app.Dialog(this);
-        LinearLayout sheet=new LinearLayout(this);sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(dp(this,20),dp(this,10),dp(this,20),dp(this,20));
-        sheet.setBackground(Ui.round(this,Ui.CARD,24));
-        View handle=new View(this);handle.setBackground(Ui.round(this,Ui.LINE,3));
-        LinearLayout.LayoutParams handleLp=new LinearLayout.LayoutParams(dp(this,32),dp(this,4));handleLp.gravity=Gravity.CENTER_HORIZONTAL;sheet.addView(handle,handleLp);
-        LinearLayout header=new LinearLayout(this);header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(uiText("事项详情",16,Ui.TEXT,true),new LinearLayout.LayoutParams(0,-2,1));
-        TextView close=uiText("×",25,Ui.SUB,false);close.setGravity(Gravity.CENTER);close.setContentDescription("关闭详情");
-        close.setBackground(Ui.rippleCircle(this,Ui.withAlpha(Ui.BLUE,25)));close.setOnClickListener(v->dialog.dismiss());
-        header.addView(close,new LinearLayout.LayoutParams(dp(this,44),dp(this,44)));sheet.addView(header);
-        LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);
-        TextView title=uiText(c.displayTitle(),23,Ui.TEXT,true);title.setLineSpacing(dp(this,4),1.05f);content.addView(title);
-        String deadline=c.deadlineHint()!=null?c.deadlineHint()+" · 时刻待确认":c.deadline==0?"时间待确认":dateTimeLabel(c.deadline);
-        TextView time=uiText("截止时间\n"+deadline,14,c.needsConfirm?Ui.AMBER_TX:Ui.BLUE,true);
-        time.setLineSpacing(dp(this,6),1);time.setPadding(dp(this,14),dp(this,12),dp(this,14),dp(this,12));
-        time.setBackground(Ui.round(this,c.needsConfirm?Ui.AMBER_BG:Ui.BLUE_BG,14));
-        LinearLayout.LayoutParams timeLp=new LinearLayout.LayoutParams(-1,-2);timeLp.topMargin=dp(this,18);content.addView(time,timeLp);
-        TextView origin=uiText(sourceName(c)+" · "+(c.groupName==null?"":c.groupName),12,Ui.SUB,true);
-        origin.setPadding(0,dp(this,16),0,dp(this,8));content.addView(origin);
-        TextView sender=uiText("发送者  "+(c.sender==null?"未知":c.sender)+(TextUtils.isEmpty(c.channel)?"":"   ·   提交到 "+c.channel),12,Ui.SUB,false);content.addView(sender);
-        LinearLayout actions=new LinearLayout(this);actions.setGravity(Gravity.CENTER_VERTICAL);
-        Intent sourceIntent=SourceLaunch.intentFor(this,c.sourcePackageName());
-        if(sourceIntent!=null){
-            Button open=button("打开"+sourceName(c),v->{try{dialog.dismiss();startActivity(sourceIntent);}catch(Exception unavailable){Toast.makeText(this,"来源应用暂时无法打开",Toast.LENGTH_SHORT).show();}});
-            actions.addView(open,new LinearLayout.LayoutParams(0,dp(this,44),1));
+        android.app.Dialog[] holder = new android.app.Dialog[1];
+        long now = System.currentTimeMillis();
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.addView(sourceMark(c, 18));
+        TextView from = uiText(sourceName(c) + (TextUtils.isEmpty(c.groupName) ? "" : " · " + c.groupName), 13, Ui.SUB, true);
+        from.setSingleLine(true);
+        from.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams fromLp = new LinearLayout.LayoutParams(0, -2, 1);
+        fromLp.leftMargin = dp(this, 8);
+        head.addView(from, fromLp);
+        TextView close = uiText("×", 22, Ui.SUB, false);
+        close.setGravity(Gravity.CENTER);
+        close.setContentDescription("关闭详情");
+        close.setBackground(Ui.ripple(this, Ui.disc(this, Ui.FILL), Ui.press(), 18));
+        close.setOnClickListener(v -> holder[0].dismiss());
+        head.addView(close, lp(dp(this, 36), dp(this, 36)));
+        LinearLayout.LayoutParams headLp = lp(-1, -2);
+        headLp.topMargin = dp(this, 12);
+        content.addView(head, headLp);
+
+        TextView kindTag = kindTag(c.kind);
+        if (kindTag != null) {
+            LinearLayout.LayoutParams kLp = lp(-2, -2);
+            kLp.topMargin = dp(this, 18);
+            content.addView(kindTag, kLp);
         }
-        Button copy=button("复制摘要",v->{
-            String summary=c.displayTitle()+"\n截止："+deadline+(TextUtils.isEmpty(c.channel)?"":"\n提交到："+c.channel)+"\n来源："+sourceName(c)+" · "+c.groupName;
-            android.content.ClipboardManager clipboard=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
-            if(clipboard!=null){clipboard.setPrimaryClip(android.content.ClipData.newPlainText("事项摘要",summary));Toast.makeText(this,"已复制事项摘要",Toast.LENGTH_SHORT).show();}
+        TextView title = uiText(c.displayTitle(), 22, Ui.TEXT, false);
+        title.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        title.setLineSpacing(dp(this, 4), 1f);
+        title.setTextIsSelectable(true);
+        LinearLayout.LayoutParams titleLp = lp(-1, -2);
+        titleLp.topMargin = dp(this, kindTag == null ? 18 : 10);
+        content.addView(title, titleLp);
+
+        // 截止时间块
+        String deadline = c.deadlineHint() != null ? c.deadlineHint() + " · 时刻待确认"
+                : c.deadline == 0 ? "时间待确认" : dateTimeLabel(c.deadline);
+        boolean unsure = c.needsConfirm || c.deadline == 0 || c.deadlineHint() != null;
+        int urgency = TodayView.urgency(c.deadline, c.needsConfirm, c.done, now);
+        int tone = c.done ? Ui.SUB : unsure ? Ui.AMBER_TX : urgency >= 1 ? Ui.urgencyColor(urgency) : Ui.ACCENT;
+        int toneBg = c.done ? Ui.FILL : unsure ? Ui.AMBER_BG : urgency >= 1 ? Ui.urgencyBg(urgency) : Ui.ACCENT_BG;
+        LinearLayout dueBox = new LinearLayout(this);
+        dueBox.setOrientation(LinearLayout.VERTICAL);
+        dueBox.setPadding(dp(this, 16), dp(this, 14), dp(this, 16), dp(this, 14));
+        dueBox.setBackground(Ui.round(this, toneBg, 16));
+        dueBox.addView(uiText(c.done ? "已完成" : "exam".equals(c.kind) ? "考试时间" : "截止时间", 12, Ui.withAlpha(tone, 200), true));
+        TextView dueValue = uiText(deadline, 18, tone, true);
+        dueValue.setPadding(0, dp(this, 6), 0, 0);
+        dueBox.addView(dueValue);
+        if (!c.done && !unsure && c.deadline > 0) {
+            TextView cd = uiText(TodayView.countdown(c.deadline, now), 13, tone, false);
+            cd.setPadding(0, dp(this, 4), 0, 0);
+            dueBox.addView(cd);
+        }
+        if (unsure && !TextUtils.isEmpty(c.reason)) {
+            TextView why = uiText(c.reason, 12, tone, false);
+            why.setLineSpacing(dp(this, 2), 1f);
+            why.setPadding(0, dp(this, 6), 0, 0);
+            dueBox.addView(why);
+        }
+        LinearLayout.LayoutParams dueLp = lp(-1, -2);
+        dueLp.topMargin = dp(this, 18);
+        content.addView(dueBox, dueLp);
+
+        // 关键信息
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        infoRow(info, "提交到", c.channel);
+        infoRow(info, "地点", c.place);
+        infoRow(info, "携带", c.bring);
+        infoRow(info, "发送者", TextUtils.isEmpty(c.sender) ? "未知" : c.sender);
+        LinearLayout.LayoutParams infoLp = lp(-1, -2);
+        infoLp.topMargin = dp(this, 8);
+        content.addView(info, infoLp);
+
+        // 快捷操作
+        LinearLayout actions = new LinearLayout(this);
+        Intent sourceIntent = SourceLaunch.intentFor(this, c.sourcePackageName());
+        if (sourceIntent != null) {
+            Button open = button("打开" + sourceName(c), v -> {
+                try {
+                    holder[0].dismiss();
+                    startActivity(sourceIntent);
+                } catch (Exception unavailable) {
+                    Toast.makeText(this, "来源应用暂时无法打开", Toast.LENGTH_SHORT).show();
+                }
+            });
+            actions.addView(open, new LinearLayout.LayoutParams(0, dp(this, 46), 1));
+        }
+        Button copy = button("复制", v -> {
+            String summary = c.displayTitle() + "\n截止：" + deadline + (TextUtils.isEmpty(c.channel) ? "" : "\n提交到：" + c.channel)
+                    + "\n来源：" + sourceName(c) + " · " + c.groupName;
+            android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("事项摘要", summary));
+                Toast.makeText(this, "已复制事项摘要", Toast.LENGTH_SHORT).show();
+            }
         });
-        LinearLayout.LayoutParams copyLp=new LinearLayout.LayoutParams(0,dp(this,44),1);copyLp.leftMargin=sourceIntent==null?0:dp(this,8);actions.addView(copy,copyLp);
-        LinearLayout.LayoutParams actionsLp=new LinearLayout.LayoutParams(-1,-2);actionsLp.topMargin=dp(this,16);content.addView(actions,actionsLp);
-        if(sourceIntent!=null){TextView note=uiText("打开来源应用后，请到对应群聊查看",11,Ui.MUTE,false);note.setPadding(0,dp(this,6),0,0);content.addView(note);}
-        TextView section=uiText("原始消息",13,Ui.TEXT,true);section.setPadding(0,dp(this,24),0,dp(this,10));content.addView(section);
-        StringBuilder original=new StringBuilder(c.sourceText==null?"原消息不可用":c.sourceText);
-        if(!TextUtils.isEmpty(c.lastRevisionText))original.append("\n\n最新更正\n").append(c.lastRevisionText);
-        if(c.context!=null && !c.context.isEmpty()){original.append("\n\n相关上下文");for(String line:c.context)original.append("\n· ").append(line);}
-        TextView source=uiText(original.toString(),14,Ui.TEXT,false);source.setTextIsSelectable(true);source.setLineSpacing(dp(this,5),1.1f);
-        source.setPadding(dp(this,14),dp(this,14),dp(this,14),dp(this,14));source.setBackground(Ui.round(this,Ui.BG,14));content.addView(source);
-        LinearLayout minor=new LinearLayout(this);
-        Button calendar=button("加入日历",v->{dialog.dismiss();addToCalendar(c);});minor.addView(calendar,new LinearLayout.LayoutParams(0,dp(this,44),1));
-        Button remove=button("移除事项",v->new AlertDialog.Builder(this).setTitle("移除这条事项？").setMessage("可在“更多 → 已移除的卡片”中恢复。")
-                .setNegativeButton("保留",null).setPositiveButton("移除",(d,w)->{Engine shown=demo==null?engine:demo.engine;if(shown.dismissCard(c,System.currentTimeMillis())){dialog.dismiss();render();if(demo==null)EngineHolder.save(this);}}).show());
-        minor.addView(remove,new LinearLayout.LayoutParams(0,dp(this,44),1));
-        LinearLayout.LayoutParams minorLp=new LinearLayout.LayoutParams(-1,-2);minorLp.topMargin=dp(this,16);minorLp.bottomMargin=dp(this,16);content.addView(minor,minorLp);
-        ScrollView scroll=scrollForm(content);scroll.setVerticalScrollBarEnabled(false);sheet.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        LinearLayout footer=new LinearLayout(this);footer.setPadding(0,dp(this,12),0,0);
-        Button edit=button("修正信息",v->{dialog.dismiss();showCardEdit(c);});footer.addView(edit,new LinearLayout.LayoutParams(0,dp(this,48),1));
-        Button complete=stylePrimary(button(c.done?"恢复待办":"标记完成",v->{dialog.dismiss();toggleDone(c);}));
-        LinearLayout.LayoutParams completeLp=new LinearLayout.LayoutParams(0,dp(this,48),1);completeLp.leftMargin=dp(this,10);footer.addView(complete,completeLp);sheet.addView(footer);
-        dialog.setContentView(sheet);dialog.setCanceledOnTouchOutside(true);dialog.show();
-        android.view.Window window=dialog.getWindow();
-        if(window!=null){window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));window.setGravity(Gravity.BOTTOM);window.setDimAmount(0.35f);window.setLayout(-1,(int)(getResources().getDisplayMetrics().heightPixels*0.84f));window.setNavigationBarColor(Ui.CARD);}
+        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(0, dp(this, 46), 1);
+        copyLp.leftMargin = sourceIntent == null ? 0 : dp(this, 8);
+        actions.addView(copy, copyLp);
+        Button calendar = button("加入日历", v -> {
+            holder[0].dismiss();
+            addToCalendar(c);
+        });
+        LinearLayout.LayoutParams calLp = new LinearLayout.LayoutParams(0, dp(this, 46), 1);
+        calLp.leftMargin = dp(this, 8);
+        actions.addView(calendar, calLp);
+        for (int i = 0; i < actions.getChildCount(); i++) {
+            ((Button) actions.getChildAt(i)).setTextSize(13);
+            actions.getChildAt(i).setPadding(dp(this, 6), 0, dp(this, 6), 0);
+        }
+        LinearLayout.LayoutParams actionsLp = lp(-1, -2);
+        actionsLp.topMargin = dp(this, 12);
+        content.addView(actions, actionsLp);
+
+        // 原始消息
+        TextView section = uiText("原始消息", 13, Ui.SUB, true);
+        section.setPadding(dp(this, 2), dp(this, 26), 0, dp(this, 10));
+        content.addView(section);
+        StringBuilder original = new StringBuilder(c.sourceText == null ? "原消息不可用" : c.sourceText);
+        if (!TextUtils.isEmpty(c.lastRevisionText)) original.append("\n\n最新更正\n").append(c.lastRevisionText);
+        if (c.context != null && !c.context.isEmpty()) {
+            original.append("\n\n相关上下文");
+            for (String line : c.context) original.append("\n· ").append(line);
+        }
+        LinearLayout quote = new LinearLayout(this);
+        quote.setBackground(Ui.round(this, Ui.BG, 14));
+        quote.setPadding(dp(this, 14), dp(this, 14), dp(this, 14), dp(this, 14));
+        View bar = new View(this);
+        bar.setBackground(Ui.round(this, Ui.LINE, 2));
+        quote.addView(bar, lp(dp(this, 3), -1));
+        TextView source = uiText(original.toString(), 14, Ui.TEXT, false);
+        source.setTextIsSelectable(true);
+        source.setLineSpacing(dp(this, 5), 1.05f);
+        LinearLayout.LayoutParams srcLp = new LinearLayout.LayoutParams(0, -2, 1);
+        srcLp.leftMargin = dp(this, 12);
+        quote.addView(source, srcLp);
+        content.addView(quote, lp(-1, -2));
+        if (sourceIntent != null) {
+            TextView note = uiText("打开" + sourceName(c) + "后，到对应群聊查看上下文", 12, Ui.MUTE, false);
+            note.setPadding(dp(this, 2), dp(this, 8), 0, 0);
+            content.addView(note);
+        }
+
+        // 次要操作：文字链接
+        LinearLayout links = new LinearLayout(this);
+        links.setGravity(Gravity.CENTER);
+        TextView edit = linkText("修正信息", Ui.ACCENT);
+        edit.setOnClickListener(v -> {
+            holder[0].dismiss();
+            showCardEdit(c);
+        });
+        links.addView(edit, lp(-2, dp(this, 44)));
+        TextView remove = linkText("移除事项", Ui.RED);
+        remove.setOnClickListener(v -> alert().setTitle("移除这条事项？").setMessage("可在「更多 → 已移除的卡片」中恢复。")
+                .setNegativeButton("保留", null).setPositiveButton("移除", (d, w) -> {
+                    Engine shown = demo == null ? engine : demo.engine;
+                    if (shown.dismissCard(c, System.currentTimeMillis())) {
+                        holder[0].dismiss();
+                        render();
+                        if (demo == null) EngineHolder.save(this);
+                    }
+                }).show());
+        LinearLayout.LayoutParams rmLp = lp(-2, dp(this, 44));
+        rmLp.leftMargin = dp(this, 24);
+        links.addView(remove, rmLp);
+        LinearLayout.LayoutParams linksLp = lp(-1, -2);
+        linksLp.topMargin = dp(this, 14);
+        content.addView(links, linksLp);
+
+        LinearLayout footer = new LinearLayout(this);
+        footer.setPadding(0, dp(this, 12), 0, 0);
+        Button complete = stylePrimary(button(c.done ? "恢复为待办" : "标记完成", v -> {
+            holder[0].dismiss();
+            toggleDone(c);
+        }));
+        footer.addView(complete, new LinearLayout.LayoutParams(-1, dp(this, 52)));
+        holder[0] = showSheet(content, footer);
     }
 
-    /**
-     * 标记完成 / 恢复成待办。
-     * 从原弹窗按钮回调原样抽出：只翻转 c.done，然后重绘；非演示模式下落盘。
-     */
+    private void infoRow(LinearLayout parent, String label, String value) {
+        if (TextUtils.isEmpty(value) || value.trim().isEmpty()) return;
+        if (parent.getChildCount() > 0) parent.addView(Ui.hairline(this));
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(dp(this, 2), dp(this, 12), dp(this, 2), dp(this, 12));
+        TextView l = uiText(label, 14, Ui.MUTE, false);
+        row.addView(l, lp(dp(this, 64), -2));
+        TextView v = uiText(value.trim(), 14, Ui.TEXT, false);
+        v.setLineSpacing(dp(this, 3), 1f);
+        v.setTextIsSelectable(true);
+        row.addView(v, new LinearLayout.LayoutParams(0, -2, 1));
+        parent.addView(row, lp(-1, -2));
+    }
+
+    private TextView linkText(String text, int color) {
+        TextView t = uiText(text, 14, color, true);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(this, 12), 0, dp(this, 12), 0);
+        t.setBackground(Ui.ripple(this, null, Ui.press(), 10));
+        return t;
+    }
+
+    /** 标记完成 / 恢复成待办；标记完成时底部给 4 秒撤销。 */
     void toggleDone(Engine.Card c) {
         if (c.done) {
             c.done = false;   // 恢复成待办
+            hideUndo();
         } else {
             c.done = true;    // 标记已完成
+            showUndo(c);
         }
         render();
         if (demo == null) EngineHolder.save(this);
+    }
+
+    private final Runnable hideUndoRunnable = this::hideUndo;
+
+    void showUndo(Engine.Card c) {
+        if (undoBar == null) return;
+        undoText.setText("已完成「" + c.displayTitle() + "」");
+        undoAction.setOnClickListener(v -> {
+            hideUndo();
+            if (c.done) {
+                c.done = false;
+                render();
+                if (demo == null) EngineHolder.save(this);
+            }
+        });
+        uiHandler.removeCallbacks(hideUndoRunnable);
+        undoBar.animate().cancel();
+        if (undoBar.getVisibility() != View.VISIBLE) {
+            undoBar.setAlpha(0f);
+            undoBar.setTranslationY(dp(this, 24));
+            undoBar.setVisibility(View.VISIBLE);
+        }
+        undoBar.animate().alpha(1f).translationY(0f).setDuration(200)
+                .setInterpolator(new DecelerateInterpolator()).start();
+        uiHandler.postDelayed(hideUndoRunnable, 4000);
+    }
+
+    void hideUndo() {
+        if (undoBar == null || undoBar.getVisibility() != View.VISIBLE) return;
+        uiHandler.removeCallbacks(hideUndoRunnable);
+        undoBar.animate().cancel();
+        undoBar.animate().alpha(0f).translationY(dp(this, 24)).setDuration(160)
+                .withEndAction(() -> undoBar.setVisibility(View.GONE)).start();
     }
 
     void showRemovedCards() {
         Engine shown = demo == null ? engine : demo.engine;
         List<Engine.Card> removed = shown.removedCards();
         if (removed.isEmpty()) {
-            new AlertDialog.Builder(this).setTitle("已移除的卡片")
+            alert().setTitle("已移除的卡片")
                     .setMessage("这里是空的。误移除的卡片可以从这里恢复。")
                     .setPositiveButton("知道了", null).show();
             return;
@@ -1193,11 +1718,11 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             Engine.Card card = removed.get(i);
             titles[i] = card.displayTitle() + "\n" + sourceName(card) + " · " + card.groupName;
         }
-        new AlertDialog.Builder(this)
+        alert()
                 .setTitle("已移除的卡片（" + removed.size() + "）")
                 .setItems(titles, (dialog, which) -> {
                     Engine.Card card = removed.get(which);
-                    new AlertDialog.Builder(this)
+                    alert()
                             .setTitle(card.displayTitle())
                             .setMessage("来源：" + sourceName(card) + " · " + card.groupName + "\n截止时间：" + dateTimeLabel(card.deadline)
                                     + "\n移除时间：" + dateTimeLabel(card.removedAt)
@@ -1215,7 +1740,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                             .setNegativeButton("返回列表", (d, w) -> showRemovedCards())
                             .show();
                 })
-                .setNeutralButton("清空已移除", (dialog, which) -> new AlertDialog.Builder(this)
+                .setNeutralButton("清空已移除", (dialog, which) -> alert()
                         .setTitle("清空已移除的卡片？")
                         .setMessage("这些卡片将无法恢复。")
                         .setPositiveButton("清空", (d, w) -> {
@@ -1233,7 +1758,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         String state = enabled
                 ? (ReminderReceiver.canNotify(this) ? "已开启" : "已开启，系统通知权限待确认")
                 : "已关闭";
-        new AlertDialog.Builder(this)
+        alert()
                 .setTitle("到期提醒 · " + state)
                 .setMessage("给时间已确认的未完成事项安排提醒。提前两小时进入提醒窗口，实际送达时间受系统调度影响。通知栏只提示有待办即将到期。")
                 .setPositiveButton(enabled ? "关闭提醒" : "开启提醒", (dialog, which) -> {
@@ -1298,7 +1823,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             deadline[0] = 0L;
             time.setText("时间：待确认");
         }));
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        AlertDialog dialog = alert()
                 .setTitle("修正卡片")
                 .setView(scrollForm(form))
                 .setNegativeButton("取消", null)
