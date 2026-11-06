@@ -24,7 +24,7 @@
     </queries>
 
     <application
-        android:label="楼外"
+        android:label="@string/app_name"
         android:icon="@drawable/ic_launcher"
         android:allowBackup="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
@@ -33,7 +33,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:windowSoftInputMode="stateAlwaysHidden|adjustResize"
-            android:label="楼外">
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

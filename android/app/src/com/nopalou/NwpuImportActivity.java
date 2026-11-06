@@ -86,7 +86,8 @@ public class NwpuImportActivity extends Activity {
         back.setContentDescription("返回"); back.setOnClickListener(v -> { if (!saving) finish(); });
         bar.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
         bar.addView(text("导入课表", 19, Ui.TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
-        TextView secure = Ui.tag(this, "校方认证", Ui.ACCENT, Ui.ACCENT_BG); bar.addView(secure);
+        boolean testBuild = getPackageName().equals("com.nopalou.preview") || getPackageName().equals("com.nopalou.timetabletest");
+        TextView secure = Ui.tag(this, testBuild ? "测试版" : "校方认证", Ui.ACCENT, Ui.ACCENT_BG); bar.addView(secure);
         LinearLayout intro = CourseUi.column(this); intro.setPadding(dp(24), dp(14), dp(24), dp(20)); root.addView(intro);
         status = text("登录一次，课表就位", 25, Ui.TEXT, true); intro.addView(status);
         hint = text("自动获取本学期课程，保存后随时查看", 12, Ui.SUB, false); hint.setPadding(0, dp(10), 0, 0); intro.addView(hint);

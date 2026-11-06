@@ -82,6 +82,8 @@ public class TimetableActivity extends Activity {
         toolbar.addView(icon("back", "返回", this::finish));
         TextView title = text("我的课表", 20, Ui.TEXT, true);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        if (getPackageName().equals("com.nopalou.preview") || getPackageName().equals("com.nopalou.timetabletest"))
+            toolbar.addView(Ui.tag(this, "测试版", Ui.SUB, Ui.FILL));
         if (table != null) toolbar.addView(icon("sync", "重新同步课表", () -> importTable(true)));
         toolbar.addView(icon("more", "课表设置", this::settings));
         if (table == null) { empty(root); return; }

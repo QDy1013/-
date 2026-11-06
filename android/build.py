@@ -91,7 +91,6 @@ def main():
             application_id = "com.nopalou.timetabletest" if args.timetable_test else "com.nopalou.preview"
             text = text.replace('package="com.nopalou"', f'package="{application_id}"')
             text = text.replace('android:name=".', 'android:name="com.nopalou.')
-            text = text.replace('android:label="楼外"', 'android:label="楼外·课表测试"')
             manifest.write_text(text, encoding="utf-8")
             name = "nopalou-preview"
             if args.timetable_test:
@@ -99,7 +98,8 @@ def main():
                 ET.register_namespace("android", "http://schemas.android.com/apk/res/android")
                 tree = ET.parse(manifest)
                 app = tree.getroot().find("application")
-                app.set(ns + "label", "楼外·多校测试")
+                # Keep the repository's application name and icon, including resource references.
+                app_label = app.get(ns + "label", "@string/app_name")
                 launcher = None
                 for activity in app.findall("activity"):
                     for intent in list(activity.findall("intent-filter")):
@@ -109,7 +109,7 @@ def main():
                     activity.set(ns + "exported", "false")
                 target = next(a for a in app.findall("activity") if a.get(ns + "name") == "com.nopalou.NwpuImportActivity")
                 target.set(ns + "exported", "true")
-                target.set(ns + "label", "楼外·多校测试")
+                target.set(ns + "label", app_label)
                 if launcher is not None:
                     target.append(launcher)
                 for tag in ("service", "receiver"):
