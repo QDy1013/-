@@ -3,6 +3,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import xml.etree.ElementTree as ET
 import subprocess
 from tempfile import TemporaryDirectory
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -40,8 +41,12 @@ def build(name: str, src: Path, stage: Path, sdk: Path, keystore: Path) -> Path:
     # 给 JDK 21 生成的隐式参数保留名字，兼容 Build Tools 34 的 D8。
     run("javac", "-encoding", "UTF-8", "-parameters", "--release", "11", "-classpath", android_jar,
         "-d", classes, *sorted((src / "src").rglob("*.java")))
-    run(d8, "--lib", android_jar, "--min-api", "24", "--output", dex,
-        *sorted(classes.rglob("*.class")))
+    # A single archive avoids cmd.exe's argument limit on Windows as the app grows.
+    class_archive = work / "classes.jar"
+    with ZipFile(class_archive, "w", ZIP_DEFLATED) as archive:
+        for file in sorted(classes.rglob("*.class")):
+            archive.write(file, file.relative_to(classes).as_posix())
+    run(d8, "--lib", android_jar, "--min-api", "24", "--output", dex, class_archive)
     with ZipFile(base, "a", ZIP_DEFLATED) as archive:
         archive.write(dex / "classes.dex", "classes.dex")
     run(align, "-f", "4", base, aligned)
@@ -59,6 +64,7 @@ def main():
     parser.add_argument("--out", type=Path, default=ROOT / "build")
     parser.add_argument("--keystore", type=Path, help="现有 Android 调试密钥库，供覆盖安装时保持签名")
     parser.add_argument("--preview", action="store_true", help="构建可与原版并存的独立测试版，不读取原版本机数据")
+    parser.add_argument("--timetable-test", action="store_true", help="构建直接进入课表的转发测试包，不含消息后台服务或授权引导")
     args = parser.parse_args()
     if not args.sdk or not (args.sdk / "platforms" / "android-34" / "android.jar").is_file():
         parser.error("需要 Android SDK Platform 34。请设置 ANDROID_HOME 或传入 --sdk。")
@@ -76,17 +82,45 @@ def main():
             "-keysize", "2048", "-validity", "10000", "-dname", "CN=Android Debug,O=Android,C=US")
 
     with TemporaryDirectory(prefix="compile-", dir=out) as stage:
-        if args.preview:
+        if args.preview or args.timetable_test:
             src = Path(stage) / "preview-src"
             shutil.copytree(ROOT / "app", src)
             manifest = src / "AndroidManifest.xml"
             text = manifest.read_text(encoding="utf-8")
             # Keep compiled class names; only the installed application ID changes.
-            text = text.replace('package="com.nopalou"', 'package="com.nopalou.preview"')
+            application_id = "com.nopalou.timetabletest" if args.timetable_test else "com.nopalou.preview"
+            text = text.replace('package="com.nopalou"', f'package="{application_id}"')
             text = text.replace('android:name=".', 'android:name="com.nopalou.')
             text = text.replace('android:label="楼外"', 'android:label="楼外·课表测试"')
             manifest.write_text(text, encoding="utf-8")
-            apks = [build("nopalou-preview", src, Path(stage), args.sdk.resolve(), keystore)]
+            name = "nopalou-preview"
+            if args.timetable_test:
+                ns = "{http://schemas.android.com/apk/res/android}"
+                ET.register_namespace("android", "http://schemas.android.com/apk/res/android")
+                tree = ET.parse(manifest)
+                app = tree.getroot().find("application")
+                app.set(ns + "label", "楼外·多校测试")
+                launcher = None
+                for activity in app.findall("activity"):
+                    for intent in list(activity.findall("intent-filter")):
+                        if any(a.get(ns + "name") == "android.intent.action.MAIN" for a in intent.findall("action")):
+                            launcher = intent
+                            activity.remove(intent)
+                    activity.set(ns + "exported", "false")
+                target = next(a for a in app.findall("activity") if a.get(ns + "name") == "com.nopalou.NwpuImportActivity")
+                target.set(ns + "exported", "true")
+                target.set(ns + "label", "楼外·多校测试")
+                if launcher is not None:
+                    target.append(launcher)
+                for tag in ("service", "receiver"):
+                    for element in list(app.findall(tag)):
+                        app.remove(element)
+                for permission in list(tree.getroot().findall("uses-permission")):
+                    if permission.get(ns + "name") != "android.permission.INTERNET":
+                        tree.getroot().remove(permission)
+                tree.write(manifest, encoding="utf-8", xml_declaration=True)
+                name = "nopalou-timetable-test"
+            apks = [build(name, src, Path(stage), args.sdk.resolve(), keystore)]
         else:
             apks = [build(name, ROOT / directory, Path(stage), args.sdk.resolve(), keystore)
                     for name, directory in (("nopalou", "app"), ("replay", "replay"))]

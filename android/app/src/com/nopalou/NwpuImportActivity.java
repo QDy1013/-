@@ -1,6 +1,8 @@
 package com.nopalou;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.net.http.SslError;
@@ -37,8 +39,11 @@ public class NwpuImportActivity extends Activity {
     private FrameLayout content;
     private View form, waiting;
     private EditText account, password;
-    private TextView status, hint, submit;
-    private String importScript, loginScript;
+    private TextView status, hint, submit, schoolChoice, accountCaption, passwordCaption, feedback;
+    private String importScript, loginScript, trialScript;
+    private TimetableSchool school;
+    private String lastDiagnostic = "", lastFailure = "";
+    private long trialLoadingAt;
     private String pendingAccount = "", pendingPassword = "", readToken;
     private boolean busy, submitted, reading, saving, reuseSession, courseOpened;
     private long deadline, courseDeadline, readDeadline;
@@ -53,10 +58,17 @@ public class NwpuImportActivity extends Activity {
         // Login fields and school verification pages must not enter screenshots or recent-task previews.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        try { importScript = asset("nwpu-import.js"); loginScript = asset("nwpu-login.js"); }
+        school = TimetableSchool.byId(getIntent().getStringExtra("school_id") == null ? getPreferences(MODE_PRIVATE).getString("school", "nwpu") : getIntent().getStringExtra("school_id"));
+        try { importScript = asset("nwpu-import.js"); loginScript = asset("nwpu-login.js"); trialScript = asset("school-import.js"); }
         catch (Exception e) { Toast.makeText(this, "导入组件无法加载", Toast.LENGTH_LONG).show(); finish(); return; }
         buildUi();
         if (getIntent().getBooleanExtra("reuse_session", false)) startWithSession();
+        else if (Intent.ACTION_MAIN.equals(getIntent().getAction())) io.execute(() -> {
+            try {
+                Timetable existing = TimetableStore.load(getApplicationContext());
+                if (existing != null) runOnUiThread(() -> { if (!busy && !isFinishing() && !isDestroyed()) { startActivity(new Intent(this, TimetableActivity.class)); finish(); } });
+            } catch (Exception ignored) { }
+        });
     }
     private String asset(String name) throws Exception {
         try (java.io.InputStream in = getAssets().open(name); java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
@@ -83,14 +95,17 @@ public class NwpuImportActivity extends Activity {
         configureWeb();
         ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         LinearLayout fields = CourseUi.column(this); fields.setPadding(dp(24), dp(4), dp(24), dp(24)); scroll.addView(fields);
-        TextView school = text("西北工业大学", 17, Ui.TEXT, true);
-        school.setPadding(dp(18), dp(18), dp(18), dp(18)); school.setBackground(Ui.round(this, Ui.CARD, 16)); fields.addView(school);
-        CourseUi.gap(fields, 25); fields.addView(text("翱翔门户账号", 12, Ui.SUB, true)); CourseUi.gap(fields, 9);
-        account = input("学号 / 手机号 / 邮箱", false); fields.addView(account, CourseUi.row(dp(54)));
-        CourseUi.gap(fields, 20); fields.addView(text("密码", 12, Ui.SUB, true)); CourseUi.gap(fields, 9);
+        LinearLayout schoolRow = new LinearLayout(this); schoolRow.setGravity(Gravity.CENTER_VERTICAL);
+        schoolRow.setPadding(dp(18), dp(18), dp(18), dp(18)); schoolRow.setBackground(Ui.round(this, Ui.CARD, 16)); fields.addView(schoolRow);
+        schoolChoice = text("", 16, Ui.TEXT, true); schoolRow.addView(schoolChoice, new LinearLayout.LayoutParams(0, -2, 1));
+        android.widget.ImageView choose = new android.widget.ImageView(this); choose.setImageDrawable(CourseUi.glyph(this, "down")); schoolRow.addView(choose, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        schoolRow.setContentDescription("选择学校"); schoolRow.setOnClickListener(v -> chooseSchool()); schoolRow.setFocusable(true);
+        CourseUi.gap(fields, 25); accountCaption = text("账号", 12, Ui.SUB, true); fields.addView(accountCaption); CourseUi.gap(fields, 9);
+        account = input("请输入账号", false); fields.addView(account, CourseUi.row(dp(54)));
+        CourseUi.gap(fields, 20); passwordCaption = text("密码", 12, Ui.SUB, true); fields.addView(passwordCaption); CourseUi.gap(fields, 9);
         LinearLayout passwordRow = new LinearLayout(this); passwordRow.setGravity(Gravity.CENTER_VERTICAL);
         passwordRow.setBackground(Ui.round(this, Ui.CARD, 14)); fields.addView(passwordRow, CourseUi.row(dp(54)));
-        password = input("请输入翱翔门户密码", true); password.setBackgroundColor(Color.TRANSPARENT);
+        password = input("请输入密码", true); password.setBackgroundColor(Color.TRANSPARENT);
         passwordRow.addView(password, new LinearLayout.LayoutParams(0, -1, 1));
         TextView eye = text("显示", 12, Ui.SUB, true); eye.setGravity(Gravity.CENTER); eye.setContentDescription("显示或隐藏密码");
         passwordRow.addView(eye, new LinearLayout.LayoutParams(dp(52), -1));
@@ -104,6 +119,9 @@ public class NwpuImportActivity extends Activity {
         CourseUi.gap(fields, 16);
         TextView note = text("账号密码仅用于学校认证，不在本机保存。\n如学校要求验证码，完成后会自动继续导入。", 11, Ui.SUB, false);
         note.setLineSpacing(dp(4), 1f); fields.addView(note);
+        CourseUi.gap(fields, 15);
+        feedback = CourseUi.action(this, "反馈问题", false, this::shareFeedback); feedback.setVisibility(View.GONE); intro.addView(feedback, CourseUi.row(dp(46)));
+        updateSchool();
         password.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_GO);
         password.setOnEditorActionListener((v, action, event) -> { if (action == android.view.inputmethod.EditorInfo.IME_ACTION_GO) { startWithCredentials(); return true; } return false; });
         form = scroll; content.addView(form, new FrameLayout.LayoutParams(-1, -1));
@@ -114,6 +132,22 @@ public class NwpuImportActivity extends Activity {
         setContentView(root); getWindow().setStatusBarColor(Ui.BG); getWindow().setNavigationBarColor(Ui.BG);
         root.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR |
                 (android.os.Build.VERSION.SDK_INT >= 26 ? View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0));
+    }
+    private void chooseSchool() {
+        if (busy || saving) return;
+        String[] names = new String[TimetableSchool.ALL.length];
+        for (int i = 0; i < names.length; i++) names[i] = TimetableSchool.ALL[i].name + (TimetableSchool.ALL[i].trial ? "（测试中）" : "");
+        new AlertDialog.Builder(this).setTitle("选择你的学校").setItems(names, (d, i) -> {
+            school = TimetableSchool.ALL[i]; account.setText(""); password.setText(""); lastDiagnostic = ""; lastFailure = "";
+            getPreferences(MODE_PRIVATE).edit().putString("school", school.id).apply(); updateSchool(); feedback.setVisibility(View.GONE);
+        }).setNegativeButton("取消", null).show();
+    }
+    private void updateSchool() {
+        schoolChoice.setText(school.name); accountCaption.setText(school.accountLabel); passwordCaption.setText(school.passwordLabel);
+        status.setText("登录一次，课表就位"); hint.setText(school.trial ? "这所学校正在测试，遇到问题可直接反馈" : "自动获取本学期课程，保存后随时查看");
+    }
+    private boolean schoolNavigationAllowed(Uri u) {
+        return "https".equals(u.getScheme()) && (u.getPort() == -1 || u.getPort() == 443) && u.getUserInfo() == null && TimetableSchool.hostAllowed(u.getHost(), school.domains);
     }
     private EditText input(String placeholder, boolean secret) {
         EditText e = new EditText(this); e.setHint(placeholder); e.setTextSize(15); e.setTextColor(Ui.TEXT); e.setHintTextColor(Ui.MUTE);
@@ -128,15 +162,15 @@ public class NwpuImportActivity extends Activity {
         s.setBuiltInZoomControls(true); s.setDisplayZoomControls(false);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false);
         web.setWebViewClient(new WebViewClient() {
-            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) { return !navigationAllowed(r.getUrl()); }
-            @Override public boolean shouldOverrideUrlLoading(WebView v, String u) { return !navigationAllowed(Uri.parse(u)); }
+            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) { return !schoolNavigationAllowed(r.getUrl()); }
+            @Override public boolean shouldOverrideUrlLoading(WebView v, String u) { return !schoolNavigationAllowed(Uri.parse(u)); }
             @Override public void onPageFinished(WebView v, String u) {
                 if (busy && !reading && !saving) schedule(150);
             }
             @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
-                if (r.isForMainFrame() && busy) fail("学校网页暂时无法打开，请检查网络后重试");
+                if (r.isForMainFrame() && busy) fail("学校网站暂时打不开，请连接校园网后重试；仍不行可点“反馈问题”");
             }
-            @Override public void onReceivedSslError(WebView v, SslErrorHandler h, SslError e) { h.cancel(); fail("校方证书验证失败，请稍后重试"); }
+            @Override public void onReceivedSslError(WebView v, SslErrorHandler h, SslError e) { h.cancel(); fail("暂时无法安全连接学校网站，请点“反馈问题”"); }
         });
     }
     static boolean navigationAllowed(Uri u) {
@@ -163,13 +197,14 @@ public class NwpuImportActivity extends Activity {
         CookieManager.getInstance().removeAllCookies(value -> {
             if (!busy || active != generation || isDestroyed()) return;
             CookieManager.getInstance().flush(); android.webkit.WebStorage.getInstance().deleteAllData();
-            web.clearCache(true); web.loadUrl(LOGIN_URL); schedule(500);
+            web.clearCache(true); web.loadUrl(school.entry); schedule(500);
         });
     }
-    private void startWithSession() { reset(true); web.loadUrl(LOGIN_URL); schedule(500); }
+    private void startWithSession() { reset(true); web.loadUrl(school.entry); schedule(500); }
     private void reset(boolean reuse) {
         generation++; busy = true; submitted = false; reading = false; courseOpened = false; reuseSession = reuse;
         deadline = android.os.SystemClock.elapsedRealtime() + 60_000; courseDeadline = 0; loginReadyDeadline = 0;
+        trialLoadingAt = 0; lastDiagnostic = ""; lastFailure = ""; feedback.setVisibility(View.GONE);
         showProgress("正在连接学校认证", "认证完成后自动读取并保存课表"); submit.setEnabled(false);
     }
     private void showProgress(String title, String detail) {
@@ -188,6 +223,7 @@ public class NwpuImportActivity extends Activity {
         if (!busy || reading || saving || isFinishing() || isDestroyed()) return;
         if (android.os.SystemClock.elapsedRealtime() > deadline) { fail("登录等待超时，请重新导入"); return; }
         String url = web.getUrl(); int active = generation;
+        if (school.trial) { driveTrial(active); return; }
         if (isCourse(url)) {
             if (courseDeadline == 0) courseDeadline = android.os.SystemClock.elapsedRealtime() + 20_000;
             showProgress("正在读取本学期课表", "自动识别学期与开学日期");
@@ -226,6 +262,68 @@ public class NwpuImportActivity extends Activity {
             if (!courseOpened) { courseOpened = true; showProgress("认证成功，正在获取课表", "自动读取当前学期"); web.loadUrl(COURSE_URL); }
         } else if (page.getHost() != null && page.getHost().endsWith("nwpu.edu.cn") && submitted) showChallenge();
         schedule(600);
+    }
+    private void driveTrial(int active) {
+        if (web.getUrl() == null || !schoolNavigationAllowed(Uri.parse(web.getUrl()))) { schedule(500); return; }
+        web.evaluateJavascript(trialScript + "\nSchoolImport.setup(" + school.config() + ");JSON.stringify(SchoolImport.inspect())", value -> {
+            if (!current(active)) return;
+            try {
+                JSONObject r = result(value); String phase = r.optString("phase");
+                if ("error".equals(phase)) { fail(r.optString("message", "还需要适配这个学校，请点“反馈问题”")); return; }
+                if ("courses".equals(phase)) { save(new Timetable(r.getJSONObject("data").toString()), active); return; }
+                if ("challenge".equals(phase)) { showChallenge(); schedule(600); return; }
+                if ("navigate".equals(phase)) {
+                    showProgress("正在进入学校课表", "稍等一下，读到后会自动保存");
+                    web.evaluateJavascript("SchoolImport.navigate()", ignored -> schedule(600)); return;
+                }
+                if ("ready".equals(phase)) {
+                    if (reuseSession && pendingPassword.isEmpty()) { fail("登录已过期，请输入账号密码重试"); return; }
+                    if (!submitted && !pendingPassword.isEmpty()) {
+                        web.evaluateJavascript("JSON.stringify(SchoolImport.submit(" + JSONObject.quote(pendingAccount) + "," + JSONObject.quote(pendingPassword) + "))", reply -> {
+                            if (!current(active)) return;
+                            try {
+                                JSONObject sent = result(reply);
+                                if ("error".equals(sent.optString("phase"))) { fail(sent.optString("message")); return; }
+                                if ("submitted".equals(sent.optString("phase"))) { submitted = true; pendingAccount = ""; pendingPassword = ""; password.setText(""); showProgress("正在登录学校系统", "课表读到后会自动保存"); }
+                            } catch (Exception ignored) { }
+                            schedule(600);
+                        }); return;
+                    }
+                    if (submitted) { fail("学校还没有完成登录，请点“反馈问题”帮我们继续适配"); return; }
+                }
+                if ("loading".equals(phase)) {
+                    if (trialLoadingAt == 0) trialLoadingAt = android.os.SystemClock.elapsedRealtime();
+                    if (android.os.SystemClock.elapsedRealtime() - trialLoadingAt > 20_000) { fail("学校页面和预期不一样，请点“反馈问题”"); return; }
+                } else trialLoadingAt = 0;
+            } catch (Exception e) { fail("暂时没有读到课表，请点“反馈问题”"); return; }
+            schedule(600);
+        });
+    }
+    private String safePage() {
+        try {
+            Uri u = Uri.parse(web.getUrl() == null ? school.entry : web.getUrl());
+            String path = u.getPath() == null ? "" : u.getPath();
+            java.util.Set<String> known = new java.util.HashSet<>(java.util.Arrays.asList("cas", "login", "student", "sso-login", "home", "authserver", "auth", "login.action", "loginXsJs.html", "loginCAS", "jwgl", "login.do", "main", "index", "index.html", "portal", "mobile", "login.html", "newservice", "for-std", "course-table"));
+            StringBuilder safe = new StringBuilder();
+            for (String part : path.split("/")) if (!part.isEmpty()) safe.append('/').append(known.contains(part) ? part : "[page]");
+            return u.getHost() + safe;
+        } catch (Exception e) { return school.id; }
+    }
+    private void collectDiagnostics() {
+        final String id = school.id, page = safePage();
+        lastDiagnostic = "页面：" + page;
+        if (!school.trial || web.getUrl() == null || !schoolNavigationAllowed(Uri.parse(web.getUrl()))) return;
+        web.evaluateJavascript(trialScript + "\nSchoolImport.setup(" + school.config() + ");JSON.stringify(SchoolImport.diagnostics())", value -> {
+            if (!school.id.equals(id) || isDestroyed()) return;
+            try { String structure = result(value).toString(); if (structure.length() < 6000) lastDiagnostic = "页面：" + page + "\n页面结构：" + structure; }
+            catch (Exception ignored) { }
+        });
+    }
+    private void shareFeedback() {
+        String report = "楼外课表测试反馈\n学校：" + school.name + "\n结果：" + lastFailure + "\n版本：0.18\n手机：" + android.os.Build.MODEL + " / Android " + android.os.Build.VERSION.RELEASE
+                + "\n\n以下信息由应用自动生成，不用修改：\n" + lastDiagnostic + "\n\n不含账号、密码、Cookie或课表原文。";
+        Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, report);
+        startActivity(Intent.createChooser(send, "发给邀请你测试的人"));
     }
     private boolean current(int active) { return active == generation && busy && !isFinishing() && !isDestroyed(); }
     private void submitCredentials(int active) {
@@ -276,7 +374,9 @@ public class NwpuImportActivity extends Activity {
             try {
                 TimetableStore.save(getApplicationContext(), table);
                 runOnUiThread(() -> { saving = false; if (!current(active)) return; setResult(RESULT_OK);
-                    Toast.makeText(this, "已导入 " + table.lessons.size() + " 条上课安排", Toast.LENGTH_SHORT).show(); finish(); });
+                    Toast.makeText(this, "已导入 " + table.lessons.size() + " 条上课安排", Toast.LENGTH_SHORT).show();
+                    if (Intent.ACTION_MAIN.equals(getIntent().getAction())) startActivity(new Intent(this, TimetableActivity.class));
+                    finish(); });
             } catch (Exception e) { runOnUiThread(() -> { saving = false; fail("保存失败，原课表已保留，请重试"); }); }
         });
     }
@@ -286,6 +386,7 @@ public class NwpuImportActivity extends Activity {
         handler.removeCallbacksAndMessages(null); web.stopLoading(); password.setText("");
         web.setVisibility(View.INVISIBLE); waiting.setVisibility(View.GONE); form.setVisibility(View.VISIBLE); submit.setEnabled(true);
         status.setText("重新试一次"); hint.setText(message == null || message.isEmpty() ? "学校认证未完成，请重试" : message);
+        lastFailure = hint.getText().toString(); feedback.setVisibility(View.VISIBLE); collectDiagnostics();
     }
     @Override public void onBackPressed() { if (!saving) super.onBackPressed(); }
     @Override public void onDestroy() {

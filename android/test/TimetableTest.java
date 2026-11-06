@@ -54,6 +54,17 @@ public class TimetableTest {
         ok(blocks.size() == 2, "transitive overlaps grouped instead of painted over");
         ok(blocks.get(0).start == 1 && blocks.get(0).end == 4, "overlap group covers complete interval");
         ok(blocks.get(0).lessons.size() == 3, "all overlapping courses retained for details");
+        ok(new Timetable(fixture).school.id.equals("nwpu"), "legacy NWPU storage remains compatible");
+        for (String school : new String[]{"太原理工大学", "陕西师范大学", "哈尔滨工业大学（威海）"}) {
+            JSONObject other = new JSONObject(fixture).put("school", school);
+            ok(new Timetable(other.toString()).school.name.equals(school), "known school can retain canonical timetable");
+        }
+        invalid = false;
+        try { new Timetable(new JSONObject(fixture).put("school", "unknown").toString()); } catch (Exception e) { invalid = true; }
+        ok(invalid, "unregistered school rejected");
+        ok(TimetableSchool.hostAllowed("ids.snnu.edu.cn", new String[]{"snnu.edu.cn"}), "school subdomain boundary");
+        ok(!TimetableSchool.hostAllowed("snnu.edu.cn.evil.test", new String[]{"snnu.edu.cn"}), "lookalike domain rejected");
+        ok(!TimetableSchool.hostAllowed("evil.utsp.sxzyckj.com", new String[]{"utsp.sxzyckj.com"}), "vendor host is exact-only");
         System.out.println(checks + " checks passed");
     }
 }

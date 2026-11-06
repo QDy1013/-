@@ -17,6 +17,7 @@ final class Timetable {
     final JSONObject json;
     final List<Lesson> lessons = new ArrayList<>();
     final String termName;
+    final TimetableSchool school;
     String firstMonday;
     int maxWeek = 1;
 
@@ -55,7 +56,8 @@ final class Timetable {
     Timetable(String value) throws JSONException {
         if (value == null || value.length() > MAX_BYTES) throw new JSONException("课表数据过大或缺失");
         json = new JSONObject(value);
-        if (json.getInt("version") != 1 || !"西北工业大学".equals(json.getString("school")))
+        school = TimetableSchool.byName(json.getString("school"));
+        if (json.getInt("version") != 1 || school == null)
             throw new JSONException("课表格式不受支持");
         termName = required(json, "termName", 200);
         JSONArray array = json.getJSONArray("lessons");

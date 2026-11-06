@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.nopalou"
-    android:versionCode="17"
-    android:versionName="0.17">
+    android:versionCode="18"
+    android:versionName="0.18">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 
@@ -46,7 +46,7 @@
             android:label="我的档案" />
 
         <activity android:name=".TimetableActivity" android:exported="false" android:label="我的课表" />
-        <activity android:name=".NwpuImportActivity" android:exported="false" android:label="西工大课表导入" />
+        <activity android:name=".NwpuImportActivity" android:exported="false" android:label="课表导入" />
 
         <service
             android:name=".NotifListener"

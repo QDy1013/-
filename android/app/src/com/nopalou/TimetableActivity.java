@@ -61,7 +61,9 @@ public class TimetableActivity extends Activity {
         return CourseUi.icon(this, s, description, action);
     }
     void importTable(boolean reuse) {
-        startActivity(new Intent(this, NwpuImportActivity.class).putExtra("reuse_session", reuse));
+        Intent intent = new Intent(this, NwpuImportActivity.class).putExtra("reuse_session", reuse);
+        if (reuse && table != null) intent.putExtra("school_id", table.school.id);
+        startActivity(intent);
     }
     String date(int day) {
         String label = table.dayLabel(week, day);
@@ -84,7 +86,7 @@ public class TimetableActivity extends Activity {
         toolbar.addView(icon("more", "课表设置", this::settings));
         if (table == null) { empty(root); return; }
 
-        TextView school = text("西北工业大学  /  " + table.termName, 11, Ui.SUB, false);
+        TextView school = text(table.school.name + "  /  " + table.termName, 11, Ui.SUB, false);
         school.setPadding(dp(8), dp(10), 0, dp(14)); root.addView(school);
         swipeStart = school;
         LinearLayout navigation = new LinearLayout(this); navigation.setGravity(Gravity.CENTER_VERTICAL);
@@ -229,9 +231,9 @@ public class TimetableActivity extends Activity {
         root.addView(center, new LinearLayout.LayoutParams(-1, 0, 1));
         TextView mark = text("▦", 72, Ui.ACCENT, false); center.addView(mark);
         CourseUi.gap(center, 18); center.addView(text("把这一学期，装进口袋", 21, Ui.TEXT, true));
-        CourseUi.gap(center, 12); TextView tip = text("输入翱翔门户账号密码，自动导入本学期课表", 13, Ui.SUB, false);
+        CourseUi.gap(center, 12); TextView tip = text("选择学校，输入账号密码，导入本学期课表", 13, Ui.SUB, false);
         tip.setGravity(Gravity.CENTER); center.addView(tip); CourseUi.gap(center, 28);
-        center.addView(CourseUi.action(this, "一键导入西工大课表", true, () -> importTable(false)), CourseUi.row(dp(50)));
+        center.addView(CourseUi.action(this, "一键导入课表", true, () -> importTable(false)), CourseUi.row(dp(50)));
     }
     void chooseWeek() {
         String[] weeks = new String[table.maxWeek]; for (int i = 0; i < weeks.length; i++) weeks[i] = "第 " + (i + 1) + " 周";

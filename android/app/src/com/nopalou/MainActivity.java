@@ -797,7 +797,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         menuRow(body, holder, "已移除的卡片", "误删的卡片可以在这里恢复", Ui.TEXT, this::showRemovedCards);
         menuRow(body, holder, "我的档案", "姓名、班级、课程，只存在本机", Ui.TEXT,
                 () -> startActivity(new Intent(this, ProfileActivity.class)));
-        menuRow(body, holder, "我的课表", "西工大教务一键导入，离线查看每周课程", Ui.TEXT,
+        menuRow(body, holder, "我的课表", "本科课表一键导入，离线查看每周课程", Ui.TEXT,
                 () -> startActivity(new Intent(this, TimetableActivity.class)));
         menuSection(body, "演示");
         menuRow(body, holder, demo == null ? "离线演示" : "退出演示", "用样例群消息体验作业、考试和接龙", Ui.TEXT, this::toggleDemo);
