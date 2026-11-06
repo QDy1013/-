@@ -524,7 +524,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         }));
         liveTools.addView(autoReadButton, new LinearLayout.LayoutParams(-1, dp(this, 52)));
         root.addView(liveTools);
-        root.addView(AppNavigation.bar(this, false));
+        root.addView(AppNavigation.bar(this, AppNavigation.TODO));
 
         // 撤销提示条
         undoBar = new LinearLayout(this);

@@ -19,7 +19,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 /**
- * 待办 / 课表两个主页面之间的底部导航。
+ * 待办 / 课表 / 考试成绩三个主页面之间的底部导航。
  * 样式：白底细线分隔，每个标签是「图标 + 文字」，选中项图标后面衬一枚浅靛蓝胶囊、文字变强调色；
  * 切换用 150ms 淡入淡出，不再整页横滑，像同一个 App 里换页而不是开新窗口。
  */
@@ -32,10 +32,21 @@ final class AppNavigation {
         timetableState.putInt("scrollY", scrollY);
     }
 
+    static final int TODO = 0, TIMETABLE = 1, ACADEMIC = 2;
+    static final String[] TITLES = {"待办", "课表", "考试成绩"};
+
     static void openTimetable(Activity from) {
         Intent intent = new Intent(from, TimetableActivity.class);
         if (timetableState != null) intent.putExtra("navigation_state", new Bundle(timetableState));
+        openPage(from, intent);
+    }
+
+    static void openAcademic(Activity from) { openPage(from, new Intent(from, AcademicActivity.class)); }
+
+    /** 待办是栈底；课表和考试成绩互相切换时替换当前页，返回键总是回到待办。 */
+    private static void openPage(Activity from, Intent intent) {
         from.startActivity(intent);
+        if (!(from instanceof MainActivity)) from.finish();
         fade(from);
     }
 
@@ -51,17 +62,17 @@ final class AppNavigation {
         a.overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
     }
 
-    static View bar(Activity from, boolean timetable) {
+    static View bar(Activity from, int current) {
         LinearLayout shell = CourseUi.column(from);
         shell.setBackgroundColor(Ui.CARD);
         shell.addView(Ui.hairline(from));
         LinearLayout row = new LinearLayout(from);
-        row.setPadding(Ui.dp(from, 24), Ui.dp(from, 6), Ui.dp(from, 24), Ui.dp(from, 6));
+        row.setPadding(Ui.dp(from, 16), Ui.dp(from, 6), Ui.dp(from, 16), Ui.dp(from, 6));
         shell.addView(row, new LinearLayout.LayoutParams(-1, Ui.dp(from, 62)));
-        for (int i = 0; i < 2; i++) {
-            final boolean tabIsTimetable = i == 1;
-            final boolean selected = timetable == tabIsTimetable;
-            String title = tabIsTimetable ? "课表" : "待办";
+        for (int i = 0; i < TITLES.length; i++) {
+            final int target = i;
+            final boolean selected = current == target;
+            String title = TITLES[i];
             LinearLayout tab = CourseUi.column(from);
             tab.setGravity(Gravity.CENTER);
             tab.setContentDescription(title + (selected ? "，当前页面" : ""));
@@ -72,7 +83,7 @@ final class AppNavigation {
             FrameLayout iconWrap = new FrameLayout(from);
             if (selected) iconWrap.setBackground(Ui.round(from, Ui.ACCENT_BG, 14));
             ImageView icon = new ImageView(from);
-            icon.setImageDrawable(new TabIcon(from, tabIsTimetable, selected ? Ui.ACCENT : Ui.SUB));
+            icon.setImageDrawable(new TabIcon(from, target, selected ? Ui.ACCENT : Ui.SUB));
             iconWrap.addView(icon, new FrameLayout.LayoutParams(Ui.dp(from, 22), Ui.dp(from, 22), Gravity.CENTER));
             tab.addView(iconWrap, new LinearLayout.LayoutParams(Ui.dp(from, 56), Ui.dp(from, 28)));
 
@@ -86,7 +97,8 @@ final class AppNavigation {
             tab.setOnClickListener(v -> {
                 if (selected) return;
                 v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                if (tabIsTimetable) openTimetable(from);
+                if (target == TIMETABLE) openTimetable(from);
+                else if (target == ACADEMIC) openAcademic(from);
                 else openTodo(from);
             });
         }
@@ -97,11 +109,14 @@ final class AppNavigation {
     static final class TabIcon extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final boolean calendar;
+        private final int kind;
         private final int size;
         private final RectF r = new RectF();
 
-        TabIcon(Context c, boolean calendar, int color) {
-            this.calendar = calendar;
+        TabIcon(Context c, boolean calendar, int color) { this(c, calendar ? TIMETABLE : TODO, color); }
+        TabIcon(Context c, int kind, int color) {
+            this.kind = kind;
+            this.calendar = kind == TIMETABLE;
             this.size = Ui.dp(c, 22);
             paint.setColor(color);
             paint.setStyle(Paint.Style.STROKE);
@@ -115,7 +130,17 @@ final class AppNavigation {
             float s = getBounds().width() / 24f;
             canvas.scale(s, s);
             paint.setStrokeWidth(1.8f);
-            if (calendar) {
+            if (kind == ACADEMIC) {
+                // 学士帽：菱形帽顶 + 弧形帽身 + 右侧流苏
+                android.graphics.Path top = new android.graphics.Path();
+                top.moveTo(12f, 4.5f); top.lineTo(22f, 9.5f); top.lineTo(12f, 14.5f); top.lineTo(2f, 9.5f); top.close();
+                canvas.drawPath(top, paint);
+                android.graphics.Path body = new android.graphics.Path();
+                body.moveTo(6f, 11.6f); body.lineTo(6f, 16.2f);
+                body.quadTo(12f, 20.6f, 18f, 16.2f); body.lineTo(18f, 11.6f);
+                canvas.drawPath(body, paint);
+                canvas.drawLine(22f, 9.5f, 22f, 15f, paint);
+            } else if (calendar) {
                 r.set(3.5f, 5f, 20.5f, 20.5f);
                 canvas.drawRoundRect(r, 3.5f, 3.5f, paint);
                 canvas.drawLine(3.5f, 9.5f, 20.5f, 9.5f, paint);

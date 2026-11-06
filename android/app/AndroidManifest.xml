@@ -47,6 +47,7 @@
 
         <activity android:name=".TimetableActivity" android:exported="false" android:label="我的课表" />
         <activity android:name=".NwpuImportActivity" android:exported="false" android:label="课表导入" />
+        <activity android:name=".AcademicActivity" android:exported="false" android:label="考试与成绩" />
 
         <service
             android:name=".NotifListener"

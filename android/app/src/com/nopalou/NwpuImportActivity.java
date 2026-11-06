@@ -40,7 +40,14 @@ public class NwpuImportActivity extends Activity {
     private View form, waiting;
     private EditText account, password;
     private TextView status, hint, submit, schoolChoice, accountCaption, passwordCaption, feedback;
-    private String importScript, loginScript, trialScript;
+    private String importScript, loginScript, trialScript, academicScript;
+    // One read = timetable + (exams, grades, GPA). The extra part never replaces a good timetable and,
+    // once the timetable is ready, gets at most ACADEMIC_GRACE more; whatever parts finished by then are saved.
+    private static final long ACADEMIC_GRACE = 15_000;
+    private Timetable pendingTable;
+    private String pendingTableError, pendingAcademic;
+    private boolean tableDone, academicDone;
+    private long academicDeadline;
     private TimetableSchool school;
     private String lastDiagnostic = "", lastFailure = "";
     private long trialLoadingAt;
@@ -62,6 +69,8 @@ public class NwpuImportActivity extends Activity {
         school = TimetableSchool.byId(getIntent().getStringExtra("school_id") == null ? getPreferences(MODE_PRIVATE).getString("school", "nwpu") : getIntent().getStringExtra("school_id"));
         try { importScript = asset("nwpu-import.js"); loginScript = asset("nwpu-login.js"); trialScript = asset("school-import.js"); }
         catch (Exception e) { Toast.makeText(this, "导入组件无法加载", Toast.LENGTH_LONG).show(); finish(); return; }
+        // Optional: without it the timetable import still works, only exams/grades are skipped.
+        try { academicScript = asset("nwpu-academic.js"); } catch (Exception e) { academicScript = null; }
         buildUi();
         if (getIntent().getBooleanExtra("reuse_session", false)) startWithSession();
         else if (Intent.ACTION_MAIN.equals(getIntent().getAction())) io.execute(() -> {
@@ -345,38 +354,84 @@ public class NwpuImportActivity extends Activity {
     }
     private void beginRead() {
         if (reading || saving || !busy) return;
-        reading = true; readToken = java.util.UUID.randomUUID().toString(); readDeadline = android.os.SystemClock.elapsedRealtime() + 22_000;
-        String token = readToken; int active = generation;
-        web.evaluateJavascript("NwpuImport.start(" + JSONObject.quote(token) + ");", ignored -> pollRead(active, token));
+        reading = true; readToken = java.util.UUID.randomUUID().toString();
+        long now = android.os.SystemClock.elapsedRealtime(); readDeadline = now + 22_000; academicDeadline = now + 45_000;
+        pendingTable = null; pendingTableError = null; pendingAcademic = null; tableDone = false; academicDone = academicScript == null;
+        String token = readToken, quoted = JSONObject.quote(token); int active = generation;
+        // The identity is the one NwpuImport already confirmed on this page; nothing is guessed.
+        String script = academicScript == null ? "NwpuImport.start(" + quoted + ");" : academicScript + "\nNwpuImport.start(" + quoted + ");(function(){try{NwpuAcademic.start(" + quoted
+                + ",NwpuImport.context(window,document).student);}catch(e){window.__louAcademicResult={token:" + quoted + ",status:'error'};}})();";
+        web.evaluateJavascript(script, ignored -> pollRead(active, token));
     }
     private void pollRead(int active, String token) {
         if (!current(active) || !reading || !token.equals(readToken)) return;
         if (!isCourse(web.getUrl())) { fail("课表页面已变化，本次未保存，请重试"); return; }
-        if (android.os.SystemClock.elapsedRealtime() > readDeadline) { fail("读取课表超时，请稍后重试"); return; }
-        web.evaluateJavascript("JSON.stringify(window.__louTimetableResult || null)", value -> {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (!tableDone && now > readDeadline) { tableDone = true; pendingTableError = "读取课表超时，请稍后重试"; }
+        if (!academicDone && now > academicDeadline) academicDone = true;
+        if (tableDone && academicDone) { finishRead(active); return; }
+        web.evaluateJavascript("JSON.stringify({t:window.__louTimetableResult||null,a:window.__louAcademicResult||null})", value -> {
             if (!current(active) || !reading || !token.equals(readToken)) return;
-            try {
-                JSONObject r = result(value);
-                if (token.equals(r.optString("token"))) {
-                    if ("error".equals(r.optString("status"))) { fail(r.optString("message", "课表读取失败")); return; }
-                    if ("ok".equals(r.optString("status"))) {
-                        Timetable t = new Timetable(r.getJSONObject("data").toString());
-                        if (t.firstMonday.isEmpty()) { fail("未取得学期起始日期，本次未保存"); return; }
-                        save(t, active); return;
+            JSONObject both;
+            try { both = result(value); } catch (Exception e) { both = new JSONObject(); }
+            JSONObject t = both.optJSONObject("t"), a = both.optJSONObject("a");
+            if (!tableDone && t != null && token.equals(t.optString("token"))) {
+                try {
+                    if ("error".equals(t.optString("status"))) { tableDone = true; pendingTableError = t.optString("message", "课表读取失败"); }
+                    else if ("ok".equals(t.optString("status"))) {
+                        tableDone = true;
+                        Timetable parsed = new Timetable(t.getJSONObject("data").toString());
+                        if (parsed.firstMonday.isEmpty()) pendingTableError = "未取得学期起始日期，本次未保存"; else pendingTable = parsed;
                     }
+                } catch (Exception e) { tableDone = true; pendingTableError = "课表格式暂不受支持，原课表已保留"; }
+                if (tableDone && !academicDone) {
+                    if (pendingTable != null) academicDeadline = Math.min(academicDeadline, android.os.SystemClock.elapsedRealtime() + ACADEMIC_GRACE);
+                    showProgress("正在读取考试与成绩", "考试安排、各学期成绩和绩点");
                 }
-            } catch (Exception e) { fail("课表格式暂不受支持，原课表已保留"); return; }
+            }
+            if (!academicDone && a != null && token.equals(a.optString("token"))) {
+                String st = a.optString("status");
+                // "partial" snapshots mark unfinished parts as failed, so they are safe to keep if time runs out.
+                if (("ok".equals(st) || "partial".equals(st)) && a.optJSONObject("data") != null) pendingAcademic = a.optJSONObject("data").toString();
+                if ("ok".equals(st) || "error".equals(st)) academicDone = true;
+            }
+            if (tableDone && academicDone) { finishRead(active); return; }
             handler.postDelayed(() -> pollRead(active, token), 350);
         });
     }
-    private void save(Timetable table, int active) {
+    private void finishRead(int active) {
+        if (pendingTable != null) { save(pendingTable, active, pendingAcademic); return; }
+        String message = pendingTableError == null ? "课表读取失败" : pendingTableError, academic = pendingAcademic;
+        if (academic == null) { fail(message); return; }
+        // No usable timetable (e.g. vacation), but exams and grades still deserve saving: show them instead of a failure.
+        saving = true; reading = false; handler.removeCallbacksAndMessages(null);
+        io.execute(() -> {
+            boolean ok;
+            try { AcademicStore.update(getApplicationContext(), academic); ok = true; } catch (Exception e) { ok = false; }
+            boolean saved = ok;
+            runOnUiThread(() -> {
+                saving = false;
+                if (!saved) { fail(message); return; }
+                if (!current(active)) return;
+                Toast.makeText(this, "考试与成绩已更新；课表未更新：" + message, Toast.LENGTH_LONG).show();
+                // Callers (timetable / exams tab) reload in onResume; only a direct launch needs a page to land on.
+                if (Intent.ACTION_MAIN.equals(getIntent().getAction()) || !getIntent().hasExtra("reuse_session")) startActivity(new Intent(this, AcademicActivity.class));
+                finish();
+            });
+        });
+    }
+    private void save(Timetable table, int active) { save(table, active, null); }
+    private void save(Timetable table, int active, String academic) {
         saving = true; reading = false; handler.removeCallbacksAndMessages(null);
         showProgress("课表已就位，正在保存", "保存完成后直接进入周课表");
         io.execute(() -> {
             try {
                 TimetableStore.save(getApplicationContext(), table);
+                Academic extra = null;
+                if (academic != null) try { extra = AcademicStore.update(getApplicationContext(), academic); } catch (Exception ignored) { }
+                String summary = extra == null ? "" : "，" + extra.exams.size() + " 场考试、" + extra.grades.size() + " 门成绩";
                 runOnUiThread(() -> { saving = false; if (!current(active)) return; setResult(RESULT_OK);
-                    Toast.makeText(this, "已导入 " + table.lessons.size() + " 条上课安排", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "已导入 " + table.lessons.size() + " 条上课安排" + summary, Toast.LENGTH_SHORT).show();
                     if (Intent.ACTION_MAIN.equals(getIntent().getAction())) startActivity(new Intent(this, TimetableActivity.class));
                     finish(); });
             } catch (Exception e) { runOnUiThread(() -> { saving = false; fail("保存失败，原课表已保留，请重试"); }); }
