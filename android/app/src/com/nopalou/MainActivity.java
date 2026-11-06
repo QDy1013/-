@@ -341,7 +341,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
     /**
      * 页面结构：整页一个滚动区（顶栏、大标题、搜索、筛选、卡片一起滚，小屏也不会被头部占满），
-     * 底部只在未开启读取时露出主按钮；最上层叠一条「已完成 · 撤销」提示。
+     * 底部固定待办/课表主导航；未开启读取时增加授权按钮；最上层叠一条「已完成 · 撤销」提示。
      */
     void buildUi() {
         FrameLayout frame = new FrameLayout(this);
@@ -482,6 +482,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         }));
         liveTools.addView(autoReadButton, new LinearLayout.LayoutParams(-1, dp(this, 52)));
         root.addView(liveTools);
+        root.addView(AppNavigation.bar(this, false));
 
         // 撤销提示条
         undoBar = new LinearLayout(this);
@@ -500,7 +501,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         undoBar.addView(undoAction, lp(-2, dp(this, 40)));
         undoBar.setVisibility(View.GONE);
         FrameLayout.LayoutParams undoLp = new FrameLayout.LayoutParams(-1, dp(this, 52), Gravity.BOTTOM);
-        undoLp.setMargins(dp(this, 16), 0, dp(this, 16), dp(this, 20));
+        undoLp.setMargins(dp(this, 16), 0, dp(this, 16), dp(this, 84));
         frame.addView(undoBar, undoLp);
 
         setContentView(frame);
@@ -899,6 +900,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         menuRow(body, holder, "已移除的卡片", "误删的卡片可以在这里恢复", Ui.TEXT, this::showRemovedCards);
         menuRow(body, holder, "我的档案", "姓名、班级、课程，只存在本机", Ui.TEXT,
                 () -> startActivity(new Intent(this, ProfileActivity.class)));
+        menuRow(body, holder, "我的课表", "本科课表一键导入，离线查看每周课程", Ui.TEXT,
+                () -> AppNavigation.openTimetable(this));
         menuSection(body, "演示");
         menuRow(body, holder, demo == null ? "离线演示" : "退出演示", "用样例群消息体验作业、考试和接龙", Ui.TEXT, this::toggleDemo);
         menuRow(body, holder, "通知回放", "打开消息回放器，模拟真实通知", Ui.TEXT, this::startReplay);
