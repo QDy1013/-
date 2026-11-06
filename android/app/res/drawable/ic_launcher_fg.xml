@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 「楼外」图标前景：四层逐渐变淡的聊天楼层，楼外一轮朱红的月。内容全部落在自适应图标 66dp 安全区内。 -->
+<!-- 「Offloor」图标前景：三层逐渐变短变淡的聊天楼层（不用再爬的楼），楼外一弯朱红的新月。
+     内容全部落在自适应图标中心 66dp 安全区内，圆形、方形、水滴形遮罩都不会裁到。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 三层楼：长 → 短，实 → 淡 -->
     <path android:fillColor="#1C1C1E"
-        android:pathData="M35,40h22a3,3 0 0 1 0,6h-22a3,3 0 0 1 0,-6z" />
-    <path android:fillColor="#1C1C1E" android:fillAlpha="0.55"
-        android:pathData="M35,51h16a3,3 0 0 1 0,6h-16a3,3 0 0 1 0,-6z" />
-    <path android:fillColor="#1C1C1E" android:fillAlpha="0.28"
-        android:pathData="M35,62h10a3,3 0 0 1 0,6h-10a3,3 0 0 1 0,-6z" />
-    <path android:fillColor="#1C1C1E" android:fillAlpha="0.12"
-        android:pathData="M35,73h4a3,3 0 0 1 0,6h-4a3,3 0 0 1 0,-6z" />
+        android:pathData="M37.5,48h25a4.5,4.5 0 0 1 0,9h-25a4.5,4.5 0 0 1 0,-9z" />
+    <path android:fillColor="#1C1C1E" android:fillAlpha="0.45"
+        android:pathData="M37.5,61h17a4.5,4.5 0 0 1 0,9h-17a4.5,4.5 0 0 1 0,-9z" />
+    <path android:fillColor="#1C1C1E" android:fillAlpha="0.18"
+        android:pathData="M37.5,74h7a4.5,4.5 0 0 1 0,9h-7a4.5,4.5 0 0 1 0,-9z" />
+    <!-- 新月：单独一块形状，单色主题图标里也能看出是月牙 -->
     <path android:fillColor="#E5484D"
-        android:pathData="M64,34a7,7 0 1 0 14,0a7,7 0 1 0 -14,0z" />
+        android:pathData="M79.65,42.61A10,10 0 1 1 68.41,30.13A8.5,8.5 0 0 0 79.65,42.61z" />
 </vector>

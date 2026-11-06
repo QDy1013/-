@@ -61,7 +61,7 @@ import java.util.Map;
 import java.util.function.LongConsumer;
 
 /**
- * 「楼外」主界面：一屏出结论。
+ * 「Offloor」主界面：一屏出结论。
  * 卡片 = 事由 + 截止 + 方式 + 来源；点开能回到原文和上下文。
  */
 public class MainActivity extends Activity implements Engine.SelectedListener {
@@ -87,7 +87,14 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     private Button autoReadButton;
     private LinearLayout liveFilters;
     private TextView stateFilter;
-    private final TextView[] windowTabs = new TextView[4];
+    /** 顶部日期筛选：默认「今天起」，直接看到今天及以后还没做的事。 */
+    private static final String[] WINDOW_LABELS = {"今天起", "今天", "明天", "待确认", "全部"};
+    private static final Engine.CardWindow[] WINDOW_TABS = {Engine.CardWindow.UPCOMING, Engine.CardWindow.TODAY,
+            Engine.CardWindow.TOMORROW, Engine.CardWindow.NEEDS_CONFIRM, Engine.CardWindow.ANY};
+    private final TextView[] windowTabs = new TextView[WINDOW_TABS.length];
+    private TextView scanChip;
+    /** 已经提示过的自动扫描时间，避免每次回到前台都重复提示。 */
+    private static long scanNoticeShownAt = 0L;
     private EditText searchField;
     private TextView searchClear;
     private ScrollView listScroll;
@@ -104,7 +111,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     private static final java.util.Set<String> sourceIconMiss = new java.util.HashSet<>();
     private String keywords = "";
     private Engine.CardScope scope = Engine.CardScope.ALL;
-    private Engine.CardWindow window = Engine.CardWindow.ANY;
+    private Engine.CardWindow window = Engine.CardWindow.UPCOMING;
     private int visibleLimit = PAGE_SIZE;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private boolean resumed;
@@ -133,7 +140,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             int selected = b.getInt("scope", 0);
             scope = scopes[Math.max(0, Math.min(selected, scopes.length - 1))];
             visibleLimit = Math.max(PAGE_SIZE, b.getInt("visibleLimit", PAGE_SIZE));
-            int savedWindow = b.getInt("window", 0);
+            int savedWindow = b.getInt("window", Engine.CardWindow.UPCOMING.ordinal());
             window = Engine.CardWindow.values()[Math.max(0, Math.min(savedWindow, Engine.CardWindow.values().length - 1))];
             restoreScrollY = b.getInt("scrollY", 0);
         }
@@ -164,6 +171,12 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             engine.listener = this;
             ReminderReceiver.refresh(this, engine);
             render();
+            // 服务连上时会自动扫一遍通知栏；有新事项就在这里轻提示一次。
+            NotifListener.ScanResult auto = NotifListener.lastScan;
+            if (auto != null && demo == null && NotifListener.lastScanAt > scanNoticeShownAt) {
+                scanNoticeShownAt = NotifListener.lastScanAt;
+                showScanResult(auto, false);
+            }
         }
         uiHandler.removeCallbacks(clockRefresh);
         uiHandler.postDelayed(clockRefresh, 60_000L - System.currentTimeMillis() % 60_000L);
@@ -227,7 +240,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             if (flat == null || !flat.contains(getPackageName())) {
                 alert()
                         .setTitle("还差一步")
-                        .setMessage("在「通知使用权」里打开「楼外」，我才能读到群消息。\n\n"
+                        .setMessage("在「通知使用权」里打开「Offloor」，我才能读到群消息。\n\n"
                                 + "只在本机读取和处理，飞行模式下照常工作。")
                         .setPositiveButton("去开启", (d, w) -> startActivity(
                                 new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")))
@@ -286,9 +299,9 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     void showNotifHint() {
         alert()
                 .setTitle("收不到群消息")
-                .setMessage("系统断开了楼外的通知读取（部分手机重启后会这样）。"
-                        + "请在「通知使用权」里把楼外关掉再打开；\n"
-                        + "如果仍不行，到手机管家里允许楼外自启动和后台运行。")
+                .setMessage("系统断开了 Offloor 的通知读取（部分手机重启后会这样）。"
+                        + "请在「通知使用权」里把 Offloor 关掉再打开；\n"
+                        + "如果仍不行，到手机管家里允许 Offloor 自启动和后台运行。")
                 .setPositiveButton("去设置", (d, w) -> {
                     try {
                         startActivity(new Intent(
@@ -556,13 +569,12 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         chipScroll.setClipToPadding(false);
         LinearLayout tabs = new LinearLayout(this);
         tabs.setGravity(Gravity.CENTER_VERTICAL);
-        String[] labels = {"全部", "今天", "明天", "待确认"};
-        for (int i = 0; i < labels.length; i++) {
+        for (int i = 0; i < WINDOW_TABS.length; i++) {
             final int index = i;
-            TextView tab = chip(labels[i]);
+            TextView tab = chip(WINDOW_LABELS[i]);
             tab.setOnClickListener(v -> {
                 scope = Engine.CardScope.ALL;
-                window = Engine.CardWindow.values()[index];
+                window = WINDOW_TABS[index];
                 resetCardPage();
             });
             windowTabs[i] = tab;
@@ -573,7 +585,13 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         stateFilter = chip("状态");
         stateFilter.setContentDescription("待办状态筛选");
         stateFilter.setOnClickListener(v -> showFilterMenu());
-        tabs.addView(stateFilter, lp(-2, dp(this, 36)));
+        LinearLayout.LayoutParams stateLp = lp(-2, dp(this, 36));
+        stateLp.rightMargin = dp(this, 8);
+        tabs.addView(stateFilter, stateLp);
+        scanChip = chip("扫描历史");
+        scanChip.setContentDescription("扫描通知栏里的历史消息");
+        scanChip.setOnClickListener(v -> scanHistory());
+        tabs.addView(scanChip, lp(-2, dp(this, 36)));
         chipScroll.addView(tabs);
         LinearLayout.LayoutParams tabsLp = lp(-1, -2);
         tabsLp.topMargin = dp(this, 12);
@@ -615,18 +633,23 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     }
 
     private void updateWindowTabs(Engine shown, long now) {
-        int[] counts = new int[4];
+        // 与 WINDOW_TABS 同序：今天起、今天、明天、待确认、全部。
+        int[] counts = new int[WINDOW_TABS.length];
         for (Engine.Card c : shown.all()) {
-            counts[0]++;
+            counts[4]++;
             String bucket = TodayView.bucket(c.deadline, c.needsConfirm, c.done, now);
             if ("今天".equals(bucket)) counts[1]++;
             else if ("明天".equals(bucket)) counts[2]++;
             else if ("待确认".equals(bucket)) counts[3]++;
+            if (Engine.isUpcoming(c, now)) counts[0]++;
         }
-        String[] labels = {"全部", "今天", "明天", "待确认"};
         for (int i = 0; i < windowTabs.length; i++) {
-            boolean selected = scope == Engine.CardScope.ALL && window.ordinal() == i;
-            styleChip(windowTabs[i], labels[i], String.valueOf(counts[i]), selected);
+            boolean selected = scope == Engine.CardScope.ALL && window == WINDOW_TABS[i];
+            styleChip(windowTabs[i], WINDOW_LABELS[i], String.valueOf(counts[i]), selected);
+        }
+        if (scanChip != null) {
+            scanChip.setVisibility(demo == null ? View.VISIBLE : View.GONE);
+            styleChip(scanChip, "↻ 扫描历史", null, false);
         }
         boolean scoped = scope != Engine.CardScope.ALL;
         String stateLabel = scoped ? new String[]{"状态", "未完成", "已过期", "已完成"}[scope.ordinal()] : "状态";
@@ -692,6 +715,85 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 ? "开启自动读取后，群里的作业、考试、接龙会自动整理到这里"
                 : "群里出现作业、考试、接龙时，会自动整理到这里");
         stats.setText(TextUtils.join(" · ", parts));
+    }
+
+    /** 「扫描历史」：把通知栏里还挂着的消息（含会话通知里折叠的旧消息）重新过一遍，并告诉用户结果。 */
+    private void scanHistory() {
+        if (demo != null) return;
+        if (!NotifListener.canScan()) {
+            alert().setTitle("还不能扫描")
+                    .setMessage("通知读取还没连上，扫描需要先在「通知使用权」里打开「Offloor」。")
+                    .setPositiveButton("去开启", (d, w) -> {
+                        try {
+                            startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"));
+                        } catch (Exception e) {
+                            Toast.makeText(this, "请到系统设置里搜索「通知使用权」", Toast.LENGTH_LONG).show();
+                        }
+                    })
+                    .setNegativeButton("取消", null).show();
+            return;
+        }
+        NotifListener.ScanResult r = NotifListener.scanNow();
+        if (r == null) {
+            Toast.makeText(this, "扫描失败，稍后再试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        scanNoticeShownAt = NotifListener.lastScanAt;
+        showScanResult(r, true);
+    }
+
+    /** 扫描结果：有新事项时列出标题并切到「全部」方便核对；没有时说明原因。 */
+    private void showScanResult(NotifListener.ScanResult r, boolean manual) {
+        int added = r.newCardIds.size();
+        if (!manual) {
+            if (added > 0) {
+                Toast.makeText(this, "已从通知栏补上 " + added + " 个事项", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        StringBuilder msg = new StringBuilder();
+        msg.append("读了通知栏里 ").append(r.notifications).append(" 条通知、")
+                .append(r.messages).append(" 条消息");
+        if (r.messages > r.fresh) msg.append("（").append(r.messages - r.fresh).append(" 条以前处理过，已跳过）");
+        msg.append("。\n\n");
+        if (added > 0) {
+            msg.append("新增 ").append(added).append(" 个事项：\n");
+            int listed = 0;
+            for (String id : r.newCardIds) {
+                Engine.Card c = findCard(id);
+                if (c == null) continue;
+                if (listed == 6) {
+                    msg.append("…\n");
+                    break;
+                }
+                msg.append("· ").append(c.displayTitle());
+                if (c.deadline > 0 && c.deadline <= System.currentTimeMillis()) msg.append("（已过期）");
+                msg.append("\n");
+                listed++;
+            }
+        } else if (r.notifications == 0) {
+            msg.append("通知栏里没有来自微信、QQ 等聊天软件的通知。\n已经清掉的通知、免打扰群的消息扫不到。");
+        } else {
+            msg.append("没有发现新的作业、考试或接龙。");
+        }
+        alert().setTitle(added > 0 ? "扫描完成" : "扫描完成，没有新事项")
+                .setMessage(msg.toString().trim())
+                .setPositiveButton(added > 0 ? "查看" : "好", (d, w) -> {
+                    if (added > 0) {
+                        // 历史消息里的事项可能已经过期，切到「全部」才看得全。
+                        scope = Engine.CardScope.ALL;
+                        window = Engine.CardWindow.ANY;
+                        resetCardPage();
+                    }
+                })
+                .show();
+        render();
+    }
+
+    private Engine.Card findCard(String id) {
+        if (id == null || engine == null) return null;
+        for (Engine.Card c : engine.all()) if (id.equals(c.id)) return c;
+        return null;
     }
 
     private void resetCardPage() {
@@ -920,8 +1022,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         }
         // 保活说明固定接在正文末尾，原「让它一直在后台运行」的四行内容一字不改。
         body.append("\n\n保持自动读取不被系统杀掉：\n")
-                .append("1. 在系统设置里允许「楼外」自启动和后台运行（vivo：设置 > 应用与权限 > 权限管理 > 自启动）。\n")
-                .append("2. 电池设置里把「楼外」设为不限制或允许后台高耗电。\n")
+                .append("1. 在系统设置里允许「Offloor」自启动和后台运行（vivo：设置 > 应用与权限 > 权限管理 > 自启动）。\n")
+                .append("2. 电池设置里把「Offloor」设为不限制或允许后台高耗电。\n")
                 .append("3. 在最近任务里不要上滑清掉它；可以长按卡片锁定。\n")
                 .append("4. 重启手机后打开一次 App，确认状态是「已连接」。");
 
@@ -1130,11 +1232,19 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 ? shown.queryCards(keywords, scope, window, visibleLimit + 1, now)
                 : shown.ranked(PAGE_SIZE, now);
         if (list.isEmpty()) {
-            boolean filtered = !keywords.trim().isEmpty() || scope != Engine.CardScope.ALL || window != Engine.CardWindow.ANY;
+            boolean upcomingOnly = keywords.trim().isEmpty() && scope == Engine.CardScope.ALL
+                    && window == Engine.CardWindow.UPCOMING;
+            // 默认的「今天起」不算用户主动筛选：一张卡都没有时照常显示开启读取/等待消息的说明。
+            boolean filtered = !keywords.trim().isEmpty() || scope != Engine.CardScope.ALL
+                    || (window != Engine.CardWindow.ANY && !(upcomingOnly && shown.all().isEmpty()));
             if (demo != null) {
                 emptyIcon.setBackground(new Ui.CheckCircle(this, Ui.ACCENT, Ui.ACCENT, 52, true));
                 emptyTitle.setText("演示卡片已清理");
                 empty.setText("退出演示后可以重新体验。");
+            } else if (upcomingOnly && filtered) {
+                emptyIcon.setBackground(new Ui.CheckCircle(this, Ui.GREEN, Ui.GREEN, 52, true));
+                emptyTitle.setText("今天起没有要做的事");
+                empty.setText("已过期、没写日期和已完成的事项在「全部」里。\n漏了消息可以点「扫描历史」补一遍。");
             } else if (filtered) {
                 emptyIcon.setBackground(emptySearchIcon());
                 emptyTitle.setText("没有找到");
@@ -1142,7 +1252,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             } else if (EngineHolder.listenerConnected) {
                 emptyIcon.setBackground(new Ui.CheckCircle(this, Ui.GREEN, Ui.GREEN, 52, true));
                 emptyTitle.setText("暂时没有要做的事");
-                empty.setText("自动读取已开启。\n群里有作业、考试、接龙时，会自动出现在这里。");
+                empty.setText("自动读取已开启。\n群里有作业、考试、接龙时，会自动出现在这里。\n通知栏里已有的消息可以点「扫描历史」读一遍。");
             } else {
                 emptyIcon.setBackground(emptySearchIcon());
                 emptyTitle.setText("还没有待办");
@@ -1360,6 +1470,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     TextView kindTag(String kind) {
         if ("exam".equals(kind)) return Ui.tag(this, "考试", Ui.VIOLET, Ui.VIOLET_BG);
         if ("jielong".equals(kind)) return Ui.tag(this, "接龙", Ui.TEAL, Ui.TEAL_BG);
+        if (Engine.PlatformNotice.KIND_SIGNIN.equals(kind)) return Ui.tag(this, "签到", Ui.ORANGE, Ui.ORANGE_BG);
+        if (Engine.PlatformNotice.KIND_GRADE.equals(kind)) return Ui.tag(this, "成绩", Ui.GREEN, Ui.withAlpha(Ui.GREEN, 28));
         return null;
     }
 
@@ -2226,7 +2338,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         try {
             Intent i = new Intent(Intent.ACTION_INSERT);
             i.setData(CalendarContract.Events.CONTENT_URI);
-            i.putExtra(CalendarContract.Events.TITLE, "【楼外】" + c.displayTitle());
+            i.putExtra(CalendarContract.Events.TITLE, "【Offloor】" + c.displayTitle());
             // 描述不写群消息原文，避免系统日历云同步把原文外泄；只写来源与考试要点。
             StringBuilder desc = new StringBuilder();
             desc.append("来源：").append(sourceName(c)).append(" · ").append(c.groupName).append(" · ").append(c.sender);

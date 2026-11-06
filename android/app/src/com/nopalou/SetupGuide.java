@@ -120,10 +120,10 @@ final class SetupGuide {
     /** 给用户看的品牌提示：告诉他在打开的页面里找哪个开关。 */
     static String autostartHint() {
         String brand = (Build.MANUFACTURER + " " + Build.BRAND).toLowerCase(java.util.Locale.ROOT);
-        if (brand.contains("vivo") || brand.contains("iqoo")) return "在列表里打开「楼外」的自启动 / 后台启动";
-        if (brand.contains("xiaomi") || brand.contains("redmi")) return "打开「楼外」的自启动，并把省电策略设为无限制";
-        if (brand.contains("huawei") || brand.contains("honor")) return "把「楼外」改为手动管理，三个开关都打开";
-        if (brand.contains("oppo") || brand.contains("oneplus") || brand.contains("realme")) return "允许「楼外」自启动和后台运行";
-        return "在打开的页面里允许「楼外」自启动和后台运行";
+        if (brand.contains("vivo") || brand.contains("iqoo")) return "在列表里打开「Offloor」的自启动 / 后台启动";
+        if (brand.contains("xiaomi") || brand.contains("redmi")) return "打开「Offloor」的自启动，并把省电策略设为无限制";
+        if (brand.contains("huawei") || brand.contains("honor")) return "把「Offloor」改为手动管理，三个开关都打开";
+        if (brand.contains("oppo") || brand.contains("oneplus") || brand.contains("realme")) return "允许「Offloor」自启动和后台运行";
+        return "在打开的页面里允许「Offloor」自启动和后台运行";
     }
 }

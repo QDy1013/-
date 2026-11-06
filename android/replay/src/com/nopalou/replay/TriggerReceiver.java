@@ -44,7 +44,17 @@ public class TriggerReceiver extends BroadcastReceiver {
         if (context == null || intent == null) return;
         String action = intent.getAction();
 
-        if ("com.nopalou.replay.AUTOMATIC".equals(action)) {
+        if ("com.nopalou.replay.PLATFORM".equals(action)) {
+            String text = intent.getStringExtra("text");
+            if (text == null || text.trim().isEmpty()) {
+                PlatformNotifs.postSamples(context);
+                Log.i(TAG, "平台通知样例已发出");
+            } else {
+                boolean ok = PlatformNotifs.post(context, 9110 + (int) (System.currentTimeMillis() % 80),
+                        intent.getStringExtra("app"), intent.getStringExtra("title"), text);
+                Log.i(TAG, ok ? "平台通知已发出" : "app 参数要写 学习通 / 知到 / 雨课堂");
+            }
+        } else if ("com.nopalou.replay.AUTOMATIC".equals(action)) {
             AutomaticFlow.post(context, intent.getIntExtra("stage", 0));
             Log.i(TAG, "自动识别验收通知已发出");
         } else if (ACTION_FORMAT.equals(action)) {

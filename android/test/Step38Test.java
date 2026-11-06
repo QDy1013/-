@@ -28,7 +28,10 @@ public final class Step38Test {
     }
 
     static Engine.Card find(Engine e, String pkg) {
-        for (Engine.Card c : e.all()) if (pkg.equals(c.sourcePackage)) return c;
+        for (Engine.Card c : e.all()) {
+            if ("signin".equals(c.kind) || "grade".equals(c.kind)) continue;
+            if (pkg.equals(c.sourcePackage)) return c;
+        }
         return null;
     }
 
@@ -80,12 +83,14 @@ public final class Step38Test {
         check("考试标题含课程", exam.title.contains("大学物理") && exam.title.contains("考试"), exam.title);
 
         int before = e.all().size();
-        // ⑤ 成绩 / 批改 / 签到 / 互动消息不出卡
+        // ⑤ 成绩、签到出卡（v0.17 起）；互动消息、学习资料不出卡
         feed(e, XXT, "作业通知", "【概率论与数理统计】第二次作业已批改，得分92", now);
         feed(e, YKT, "雨课堂", "数据结构 老师发起了签到，请在2分钟内完成", now);
+        check("成绩、签到各出一张卡", e.all().size() == before + 2, "卡数 " + before + "→" + e.all().size());
+        before = e.all().size();
         feed(e, XXT, "学习通", "张三回复了你在讨论区的帖子", now);
         feed(e, ZD, "知到", "你的课程《大学物理》有新的学习资料", now);
-        check("成绩、签到、互动、资料不出卡", e.all().size() == before, "卡数 " + before + "→" + e.all().size());
+        check("互动、资料不出卡", e.all().size() == before, "卡数 " + before + "→" + e.all().size());
 
         // ⑥ 已过截止时间的不出卡
         feed(e, XXT, "作业通知", "【线性代数】作业《矩阵运算》截止时间：2026-11-01 23:59", now);

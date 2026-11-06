@@ -1300,7 +1300,8 @@ public class Engine {
         c.deadline = n.deadline;
         c.deadlineText = humanDeadline(n.deadline);
         c.needsConfirm = n.deadline == 0 || !n.timeSure;
-        c.channel = "exam".equals(n.kind) ? null : app;
+        boolean signin = PlatformNotice.KIND_SIGNIN.equals(n.kind), grade = PlatformNotice.KIND_GRADE.equals(n.kind);
+        c.channel = "exam".equals(n.kind) || signin || grade ? null : app;
         c.sourcePackage = m.pkg;
         c.groupId = m.pkg + "|" + (n.course.isEmpty() ? app : n.course);
         c.groupName = n.course.isEmpty() ? app : n.course;
@@ -1309,7 +1310,9 @@ public class Engine {
         c.sourceText = n.raw;
         c.sourceTs = m.ts;
         c.confidence = 0.9;
-        c.reason = n.deadline == 0 ? "通知里没有写截止时间，请到" + app + "里查看"
+        c.reason = signin ? "尽快到" + app + "里签到"
+                : grade ? "到" + app + "里看一下成绩，看过点完成"
+                : n.deadline == 0 ? "通知里没有写截止时间，请到" + app + "里查看"
                 : c.needsConfirm ? TIME_UNCERTAIN : "";
         c.context = new ArrayList<>();
         cards.add(c);
@@ -1886,7 +1889,8 @@ public class Engine {
     }
 
     public enum CardScope { ALL, OPEN, OVERDUE, COMPLETED }
-    public enum CardWindow { ANY, TODAY, TOMORROW, NEEDS_CONFIRM }
+    /** UPCOMING = 今天起：未完成、时间已确定、截止日在今天或以后。放在最后，旧的序号不变。 */
+    public enum CardWindow { ANY, TODAY, TOMORROW, NEEDS_CONFIRM, UPCOMING }
 
     public List<Card> queryCards(String keywords, CardScope scope, int limit, long now) {
         return queryCards(keywords, scope, CardWindow.ANY, limit, now);
@@ -1901,7 +1905,7 @@ public class Engine {
         long today = Math.floorDiv(now, 86400000L)
                 + Math.floorDiv(Math.floorMod(now, 86400000L) + zone.getOffset(now), 86400000L);
         for (Card card : cards) {
-            if (matchesScope(card, scope, now) && matchesWindow(card, window, today, zone) && matchesTerms(card, terms)) result.add(card);
+            if (matchesScope(card, scope, now) && matchesWindow(card, window, today, now, zone) && matchesTerms(card, terms)) result.add(card);
         }
         return rankCards(result, limit, now);
     }
@@ -1915,13 +1919,33 @@ public class Engine {
         }
     }
 
-    private static boolean matchesWindow(Card card, CardWindow window, long today, TimeZone zone) {
+    static long localDay(long ms, TimeZone zone) {
+        return Math.floorDiv(ms, 86400000L) + Math.floorDiv(Math.floorMod(ms, 86400000L) + zone.getOffset(ms), 86400000L);
+    }
+
+    /**
+     * 今天起：未完成、知道日期、日期在今天或以后。
+     * 时刻已确定的，今天已过点就算过期，不放进来；
+     * 只知道日期、时刻待确认的（如"11月12日下课前"），只要日期没过就放进来。
+     */
+    public static boolean isUpcoming(Card card, long now) {
+        TimeZone zone = TimeZone.getDefault();
+        return isUpcoming(card, localDay(now, zone), now, zone);
+    }
+
+    private static boolean isUpcoming(Card card, long today, long now, TimeZone zone) {
+        if (card.done || card.deadline <= 0) return false;
+        if (localDay(card.deadline, zone) < today) return false;
+        return card.needsConfirm || card.deadline > now;
+    }
+
+    private static boolean matchesWindow(Card card, CardWindow window, long today, long now, TimeZone zone) {
         if (window == CardWindow.ANY) return true;
         if (card.done) return false;
         if (window == CardWindow.NEEDS_CONFIRM) return card.needsConfirm || card.deadline == 0;
+        if (window == CardWindow.UPCOMING) return isUpcoming(card, today, now, zone);
         if (card.needsConfirm || card.deadline == 0) return false;
-        long day = Math.floorDiv(card.deadline, 86400000L)
-                + Math.floorDiv(Math.floorMod(card.deadline, 86400000L) + zone.getOffset(card.deadline), 86400000L);
+        long day = localDay(card.deadline, zone);
         return day - today == (window == CardWindow.TODAY ? 0 : 1);
     }
 
@@ -2181,12 +2205,25 @@ public class Engine {
         private static final String[] EXAM_WORDS = {
                 "考试", "测验", "小测", "随堂测", "测试", "期中", "期末",
         };
-        /** 不是待办：批改结果、成绩、互动消息、实时课堂事件。 */
+        /** 不是待办：互动消息、已结束的事、实时课堂事件。（成绩、签到单独出卡，见下面两个词表。） */
         private static final String[] NOT_TODO = {
-                "批改", "成绩", "得分", "分数", "评分", "已截止", "已结束", "已过期", "答案已公布", "解析已",
+                "已截止", "已结束", "已过期", "答案已公布", "解析已",
                 "点赞", "回复了你", "评论了", "关注了你", "私信",
-                "签到", "直播", "正在上课", "开始上课", "课堂已开始", "弹幕",
+                "直播", "正在上课", "开始上课", "课堂已开始", "弹幕",
         };
+        /** 出成绩了：出一张“成绩”卡，当天看一下。只认“已批改/得分”这类说法，“计入平时成绩”不算。 */
+        private static final String[] GRADE_WORDS = {
+                "已批改", "批改完成", "被批改", "已被批改", "得分", "评分", "出分", "成绩已", "成绩公布", "公布成绩",
+                "公布了成绩", "查看成绩", "分数已", "已评阅", "已评分",
+        };
+        /** 签到：出一张“签到”卡，截止时间按“N 分钟内”推算。签过了、结束了的不出。 */
+        private static final String[] SIGNIN_DONE = {
+                "已签到", "签到成功", "签到已结束", "签到结束", "补签成功", "签到已截止",
+        };
+        private static final Pattern P_WITHIN = Pattern.compile("(\\d{1,3})\\s*(分钟|小时)\\s*(?:之内|内|后截止|后结束|有效)");
+        private static final Pattern P_SCORE = Pattern.compile("(?:得分|成绩|分数|评分)(?:为|是|[：:])?\\s*(\\d{1,3}(?:\\.\\d{1,2})?)\\s*分?");
+        /** 签到没写时限时，默认 10 分钟内有效。 */
+        static final long SIGNIN_DEFAULT_MS = 10 * 60_000L;
         private static final String[] REVOKE_WORDS = {"撤回", "已删除", "删除了", "已取消", "取消了", "作废"};
         private static final String[] UPDATE_WORDS = {"延期", "延长", "延至", "推迟", "顺延", "调整", "修改了截止", "更改", "变更"};
         /** 通知标题里这些词说明它是泛称（“作业通知”），不是课程名。 */
@@ -2223,6 +2260,43 @@ public class Engine {
             if (raw.isEmpty()) return null;
             String flat = raw.replace('\n', ' ');
 
+            if (containsAny(flat, NOT_TODO_ALWAYS)) return null;
+            // 签到：要马上去点，截止时间按“N 分钟内”推算。
+            if (flat.contains("签到")) {
+                if (containsAny(flat, SIGNIN_DONE)) return null;
+                Notice n = new Notice();
+                n.raw = raw;
+                n.kind = KIND_SIGNIN;
+                n.action = NEW;
+                n.course = course(t, flat);
+                n.title = n.course.isEmpty() ? "签到" : "签到：" + n.course;
+                long within = SIGNIN_DEFAULT_MS;
+                Matcher w = P_WITHIN.matcher(flat);
+                if (w.find()) {
+                    long v = Long.parseLong(w.group(1));
+                    within = "小时".equals(w.group(2)) ? v * 3600_000L : v * 60_000L;
+                }
+                n.deadline = ts + within;
+                n.timeSure = true;
+                // 同一门课半小时内的签到通知算同一次。
+                n.key = (n.course + "|签到|" + (ts / (30 * 60_000L))).replaceAll("\\s+", "");
+                return n;
+            }
+            // 出成绩：当天看一下就行。
+            if (containsAny(flat, GRADE_WORDS)) {
+                Notice n = new Notice();
+                n.raw = raw;
+                n.kind = KIND_GRADE;
+                n.action = NEW;
+                n.course = course(t, flat);
+                // 事项名只从正文里找，避免把“作业通知”这类标题当成事项。
+                n.title = gradeTitle(body.isEmpty() ? flat : body.replace('\n', ' '), n.course);
+                n.deadline = endOfDay(ts);
+                n.timeSure = true;
+                n.key = (n.course + "|" + n.title).replaceAll("\\s+", "");
+                return n;
+            }
+
             boolean exam = containsAny(flat, EXAM_WORDS);
             boolean task = exam || containsAny(flat, TASK_WORDS);
             if (!task) return null;
@@ -2255,8 +2329,63 @@ public class Engine {
             }
             if (!title.isEmpty() && title.length() <= 30 && !containsAny(title, GENERIC_TITLE)
                     && !containsAny(title, TASK_WORDS) && !containsAny(title, EXAM_WORDS)) return title;
+            // 雨课堂、知到常见写法：“数据结构 老师发布了新作业”“线性代数 王老师布置了…”
+            m = P_COURSE_TEACHER.matcher(flat);
+            while (m.find()) {
+                String c = m.group(1).trim();
+                if (!containsAny(c, GENERIC_TITLE) && !containsAny(c, TASK_WORDS) && !containsAny(c, EXAM_WORDS)) return c;
+            }
             return "";
         }
+
+        public static final String KIND_SIGNIN = "signin";
+        public static final String KIND_GRADE = "grade";
+        /** 互动消息：不管里面提没提到签到、成绩，都不出卡。 */
+        private static final String[] NOT_TODO_ALWAYS = {"点赞", "回复了你", "评论了", "关注了你", "私信"};
+        private static final Pattern P_GRADE_TAIL = Pattern.compile(
+                "(?:已经|已被|已|被)?(?:批改|评阅|评分|出分|公布|完成批改).*$");
+
+        /** 成绩卡标题：“成绩：第二次作业 · 92分”。 */
+        static String gradeTitle(String flat, String course) {
+            String name = null;
+            Matcher m = P_BOOK.matcher(flat);
+            while (m.find() && name == null) {
+                String c = m.group(1).trim();
+                if (!c.equals(course)) name = c;
+            }
+            if (name == null) {
+                for (String clause : flat.split("[，。；！？,;!?\\n]")) {
+                    String c = clause.trim();
+                    if (!(containsAny(c, TASK_WORDS) || containsAny(c, EXAM_WORDS))) continue;
+                    c = P_BRACKET.matcher(c).replaceAll("");
+                    c = P_GRADE_TAIL.matcher(c).replaceFirst("");
+                    c = P_LEAD_NOISE.matcher(c).replaceFirst("").trim();
+                    c = c.replaceAll("^(?:你的|您的)", "").trim();
+                    if (!course.isEmpty() && c.startsWith(course)) c = c.substring(course.length()).trim();
+                    c = c.replaceAll("^[的：:\\s]+", "").replaceAll("[的\\s]+$", "");
+                    if (c.length() >= 2) { name = c; break; }
+                }
+            }
+            String title = "成绩" + (name == null || name.isEmpty() ? (course.isEmpty() ? "" : "：" + course) : "：" + name);
+            Matcher s = P_SCORE.matcher(flat);
+            if (s.find()) title += " · " + s.group(1) + "分";
+            return limit(title);
+        }
+
+        /** 当天 23:59。 */
+        static long endOfDay(long ts) {
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(ts);
+            c.set(Calendar.HOUR_OF_DAY, 23);
+            c.set(Calendar.MINUTE, 59);
+            c.set(Calendar.SECOND, 0);
+            c.set(Calendar.MILLISECOND, 0);
+            return c.getTimeInMillis();
+        }
+
+        private static final Pattern P_COURSE_TEACHER = Pattern.compile(
+                "(?:^|[\\s，,])([^\\s，,：:。【】《》]{2,20})\\s+[^\\s，,]{0,4}(?:老师|教师|助教)"
+                        + "(?:发布|布置|发起|新建|上传|提醒|开启|推送|添加)");
 
         /** 事项名：《名称》/「名称」优先，否则取含任务词的第一个子句并去掉“老师发布了”等前缀。 */
         static String itemTitle(String flat, String course, boolean exam) {
