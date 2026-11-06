@@ -28,6 +28,7 @@ import java.util.Calendar;
 /** School login stays in its HTTPS page. Only the requested timetable crosses into Java. */
 public class NwpuImportActivity extends Activity {
     static final String COURSE_URL = "https://jwxt.nwpu.edu.cn/student/for-std/course-table";
+    static final String LOGIN_URL = "https://jwxt.nwpu.edu.cn/student/sso-login";
     WebView web;
     TextView status;
     Button read;
@@ -49,12 +50,13 @@ public class NwpuImportActivity extends Activity {
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(Ui.BG);
         TextView title = label(root, "西工大课表导入", 22);
         title.setTypeface(Ui.medium());
-        label(root, "在校方网页登录并打开个人课表，选择学期后点「导入当前学期」。确认后仅将课表保存到本机。", 13);
-        status = label(root, "正在打开教务课表…", 12);
+        label(root, "使用翱翔门户的统一身份认证登录，成功后打开个人课表、选择学期，再点「导入当前学期」。", 13);
+        status = label(root, "正在打开学校统一身份认证…", 12);
         LinearLayout bar = new LinearLayout(this); root.addView(bar);
+        button(bar, "统一认证", () -> { if (!saving) web.loadUrl(LOGIN_URL); });
         button(bar, "打开课表", () -> { if (!saving) web.loadUrl(COURSE_URL); });
         button(bar, "刷新", () -> { if (!saving) web.reload(); });
-        read = button(bar, "导入当前学期", this::begin);
+        read = button(root, "导入当前学期", this::begin);
         web = new WebView(this);
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
@@ -75,7 +77,12 @@ public class NwpuImportActivity extends Activity {
                 stopReading(); status.setText("正在加载校方网页…");
             }
             @Override public void onPageFinished(WebView view, String url) {
-                status.setText(isCourse(url) ? "选择学期，等课表加载后点击导入" : "请在学校认证网页完成登录；登录后点「打开课表」");
+                Uri page = Uri.parse(url);
+                if ("jwxt.nwpu.edu.cn".equals(page.getHost()) && "/student/login".equals(page.getPath())) {
+                    status.setText("当前是教务独立账号入口。使用翱翔门户账号请点「统一认证」。");
+                } else {
+                    status.setText(isCourse(url) ? "选择学期，等课表加载后点击导入" : "请在学校统一认证网页完成登录；登录后点「打开课表」");
+                }
             }
             @Override public void onReceivedError(WebView view, WebResourceRequest r, WebResourceError e) {
                 if (r.isForMainFrame()) { stopReading(); status.setText("网页加载失败，请检查网络后刷新；如学校要求校内网络，请先连接。"); }
@@ -98,7 +105,7 @@ public class NwpuImportActivity extends Activity {
         setContentView(root);
         getWindow().setStatusBarColor(Ui.BG); getWindow().setNavigationBarColor(Ui.BG);
         root.setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-        web.loadUrl(COURSE_URL);
+        web.loadUrl(LOGIN_URL);
     }
     static boolean navigationAllowed(Uri u) {
         String host = u.getHost();
