@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -57,6 +58,7 @@ def main():
     parser.add_argument("--sdk", type=Path, default=Path(sdk_env) if sdk_env else None)
     parser.add_argument("--out", type=Path, default=ROOT / "build")
     parser.add_argument("--keystore", type=Path, help="现有 Android 调试密钥库，供覆盖安装时保持签名")
+    parser.add_argument("--preview", action="store_true", help="构建可与原版并存的独立测试版，不读取原版本机数据")
     args = parser.parse_args()
     if not args.sdk or not (args.sdk / "platforms" / "android-34" / "android.jar").is_file():
         parser.error("需要 Android SDK Platform 34。请设置 ANDROID_HOME 或传入 --sdk。")
@@ -74,8 +76,20 @@ def main():
             "-keysize", "2048", "-validity", "10000", "-dname", "CN=Android Debug,O=Android,C=US")
 
     with TemporaryDirectory(prefix="compile-", dir=out) as stage:
-        apks = [build(name, ROOT / directory, Path(stage), args.sdk.resolve(), keystore)
-                for name, directory in (("nopalou", "app"), ("replay", "replay"))]
+        if args.preview:
+            src = Path(stage) / "preview-src"
+            shutil.copytree(ROOT / "app", src)
+            manifest = src / "AndroidManifest.xml"
+            text = manifest.read_text(encoding="utf-8")
+            # Keep compiled class names; only the installed application ID changes.
+            text = text.replace('package="com.nopalou"', 'package="com.nopalou.preview"')
+            text = text.replace('android:name=".', 'android:name="com.nopalou.')
+            text = text.replace('android:label="楼外"', 'android:label="楼外·课表测试"')
+            manifest.write_text(text, encoding="utf-8")
+            apks = [build("nopalou-preview", src, Path(stage), args.sdk.resolve(), keystore)]
+        else:
+            apks = [build(name, ROOT / directory, Path(stage), args.sdk.resolve(), keystore)
+                    for name, directory in (("nopalou", "app"), ("replay", "replay"))]
         for apk in apks:
             apk.replace(out / apk.name)
             print(out / apk.name)
