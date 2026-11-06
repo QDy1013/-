@@ -123,7 +123,20 @@ public final class Step39Test {
                 "【线性代数】作业《矩阵》截止时间：2027-03-15 23:59", xxt, NOW + 2));
         check("平台不用管后不再出卡", p.all().isEmpty(), "卡数 " + p.all().size());
 
-        // ⑨ 老卡所在的群没登记过时也能设置
+        // ⑨ 升级前的老卡：所在的群自动出现在列表里
+        Engine old = fresh();
+        say(old, "g9", "老课程群", "王老师", report, NOW);
+        ByteArrayOutputStream legacy = new ByteArrayOutputStream();
+        old.saveState(legacy);
+        String noGroups = legacy.toString("UTF-8").replaceAll("(?m)^GROUP\t.*\n", "");
+        Engine up = fresh();
+        up.loadState(new ByteArrayInputStream(noGroups.getBytes("UTF-8")));
+        List<Engine.GroupInfo> seeded = up.groupList();
+        check("老卡所在的群补登记", seeded.size() == 1 && "g9".equals(seeded.get(0).id) && "老课程群".equals(seeded.get(0).name),
+                "群数 " + seeded.size());
+        check("补登记不触发存档", !up.hasStateChanges(), "dirty");
+
+        // ⑩ 老卡所在的群没登记过时也能设置
         Engine q = fresh();
         q.setGroupMode("old", "老群", WX, Engine.MODE_IGNORE, NOW);
         check("未登记的群也能设置", Engine.MODE_IGNORE.equals(q.groupMode("old")) && q.groupList().size() == 1, q.groupMode("old"));

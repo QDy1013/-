@@ -2024,6 +2024,19 @@ public class Engine {
 
     /** 群列表：重点关注在前、不用管在后，同类按最近消息时间倒序。 */
     public List<GroupInfo> groupList() {
+        // 升级前就有的卡片，它们所在的群还没登记过：按卡片补登记，列表里不会是空的。
+        for (Card c : cards) {
+            String key = groupKeyOf(c);
+            if (blank(key) || groups.containsKey(key)) continue;
+            String pkg = c.sourcePackageName();
+            String app = PlatformNotice.appName(pkg);
+            GroupInfo g = new GroupInfo();
+            g.id = key;
+            g.name = app != null ? app : blank(c.groupName) ? key : c.groupName;
+            g.pkg = pkg == null ? "" : pkg;
+            g.lastTs = c.sourceTs;
+            groups.put(key, g);
+        }
         List<GroupInfo> out = new ArrayList<>(groups.values());
         out.sort((a, b) -> {
             int ra = MODE_FOCUS.equals(a.mode) ? 0 : MODE_IGNORE.equals(a.mode) ? 2 : 1;

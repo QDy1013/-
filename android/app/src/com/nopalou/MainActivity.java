@@ -1648,7 +1648,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             holder[0].dismiss();
             showCardEdit(c);
         });
-        links.addView(edit, lp(-2, dp(this, 44)));
+        links.addView(edit, new LinearLayout.LayoutParams(0, dp(this, 44), 1));
         TextView remove = linkText("移除事项", Ui.RED);
         remove.setOnClickListener(v -> alert().setTitle("移除这条事项？").setMessage("可在「更多 → 已移除的卡片」中恢复。")
                 .setNegativeButton("保留", null).setPositiveButton("移除", (d, w) -> {
@@ -1659,22 +1659,18 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                         if (demo == null) EngineHolder.save(this);
                     }
                 }).show());
-        LinearLayout.LayoutParams rmLp = lp(-2, dp(this, 44));
-        rmLp.leftMargin = dp(this, 16);
-        links.addView(remove, rmLp);
+        links.addView(remove, new LinearLayout.LayoutParams(0, dp(this, 44), 1));
         String gid = engine.groupKeyOf(c);
         if (demo == null && !TextUtils.isEmpty(gid)) {
             boolean platform = Engine.PlatformNotice.isPlatform(c.sourcePackageName());
             String gname = platform ? sourceName(c) : (TextUtils.isEmpty(c.groupName) ? sourceName(c) : c.groupName);
             String mode = engine.groupMode(gid);
-            TextView manage = linkText(Engine.MODE_NORMAL.equals(mode) ? "管理这个群" : "这个群：" + modeLabel(mode), Ui.SUB);
+            TextView manage = linkText(Engine.MODE_NORMAL.equals(mode) ? "管理这个群" : "群：" + modeLabel(mode), Ui.SUB);
             manage.setOnClickListener(v -> {
                 holder[0].dismiss();
                 chooseGroupMode(gid, gname, c.sourcePackageName(), mode);
             });
-            LinearLayout.LayoutParams mgLp = lp(-2, dp(this, 44));
-            mgLp.leftMargin = dp(this, 16);
-            links.addView(manage, mgLp);
+            links.addView(manage, new LinearLayout.LayoutParams(0, dp(this, 44), 1));
         }
         LinearLayout.LayoutParams linksLp = lp(-1, -2);
         linksLp.topMargin = dp(this, 14);
@@ -1707,7 +1703,9 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     private TextView linkText(String text, int color) {
         TextView t = uiText(text, 14, color, true);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(dp(this, 12), 0, dp(this, 12), 0);
+        t.setPadding(dp(this, 4), 0, dp(this, 4), 0);
+        t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
         t.setBackground(Ui.ripple(this, null, Ui.press(), 10));
         return t;
     }
