@@ -167,24 +167,110 @@ public class EngineHolder {
         return engine;
     }
 
+    /** 写盘专用的单线程：界面上的完成、撤销、移除不再在主线程等磁盘。 */
+    private static final java.util.concurrent.ExecutorService WRITER =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "nopalou-save");
+                t.setPriority(Thread.NORM_PRIORITY - 1);
+                return t;
+            });
+    /** 快照序号：在主线程按顺序取快照，写盘时旧快照不会覆盖新快照。取号不加锁，主线程不会等磁盘。 */
+    private static final java.util.concurrent.atomic.AtomicLong snapshotSeq = new java.util.concurrent.atomic.AtomicLong();
+    private static long writtenSeq;
+    /** 只保护真正的文件写入。 */
+    private static final Object WRITE_LOCK = new Object();
+    private static final int WRITTEN = 1, SKIPPED = 0, FAILED = -1;
+
+    /** 等后台写盘排空（最多 timeoutMs）：页面退到后台时调用，进程随后被杀也不丢刚才的操作。 */
+    public static void flush(long timeoutMs) {
+        try {
+            WRITER.submit(() -> { }).get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * 界面操作用的保存：在当前（主）线程把引擎序列化成内存快照（很快，不碰磁盘），
+     * 写文件放到后台线程；成功后回主线程标记已保存并重排提醒。
+     */
+    public static void saveAsync(Context ctx) {
+        if (engine == null || ctx == null) return;
+        Context app0 = ctx.getApplicationContext();
+        final Context app = app0 == null ? ctx : app0;
+        final Engine e = engine;
+        final long revision = e.stateRevision();
+        final byte[] bytes;
+        try {
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream(16 * 1024);
+            e.saveState(buf);
+            bytes = buf.toByteArray();
+        } catch (Exception ex) {
+            Log.w(TAG, "序列化卡片失败，改为同步保存", ex);
+            save(ctx);
+            return;
+        }
+        final long seq = snapshotSeq.incrementAndGet();
+        WRITER.execute(() -> {
+            int result = writeBytes(app, bytes, seq);
+            new Handler(Looper.getMainLooper()).post(() -> {
+                // 被更新快照跳过的旧快照不回写“已保存”，免得把已保存版本往回拨。
+                if (result == WRITTEN && engine == e && revision >= markedRevision) {
+                    markedRevision = revision;
+                    e.markStateSaved(revision);
+                }
+                try {
+                    ReminderReceiver.refresh(app, e);
+                } catch (RuntimeException ex) {
+                    Log.w(TAG, "卡片已保存，提醒调度失败", ex);
+                    diag(app, "出错", "到期提醒调度失败");
+                }
+            });
+        });
+    }
+
+    /** 写入一份快照；比它新的快照已经写过就跳过。 */
+    private static int writeBytes(Context app, byte[] bytes, long seq) {
+        synchronized (WRITE_LOCK) {
+            if (seq <= writtenSeq) return SKIPPED;
+            AtomicFile file = new AtomicFile(new File(app.getFilesDir(), FILE_NAME));
+            FileOutputStream out = null;
+            try {
+                out = file.startWrite();
+                out.write(bytes);
+                file.finishWrite(out);
+                writtenSeq = seq;
+                return WRITTEN;
+            } catch (Exception ex) {
+                if (out != null) file.failWrite(out);
+                Log.w(TAG, "保存卡片失败", ex);
+                return FAILED;
+            }
+        }
+    }
+
+    /** 主线程上最近一次标记为已保存的版本。 */
+    private static long markedRevision = Long.MIN_VALUE;
+
     /** 写入成功后提交新存档，出错时由 AtomicFile 保留上一次存档。 */
     public static synchronized boolean save(Context ctx) {
         if (engine == null || ctx == null) return false;
         Context app = ctx.getApplicationContext();
         if (app == null) app = ctx;
 
-        AtomicFile file = new AtomicFile(new File(app.getFilesDir(), FILE_NAME));
         long revision = engine.stateRevision();
-        FileOutputStream out = null;
+        byte[] bytes;
         try {
-            out = file.startWrite();
-            engine.saveState(out);
-            file.finishWrite(out);
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream(16 * 1024);
+            engine.saveState(buf);
+            bytes = buf.toByteArray();
         } catch (Exception ex) {
-            if (out != null) file.failWrite(out);
             Log.w(TAG, "保存卡片失败", ex);
             return false;
         }
+        long seq = snapshotSeq.incrementAndGet();
+        // 与后台写盘共用序号：同步保存的是最新快照，排在它之前的后台快照会被跳过。
+        if (writeBytes(app, bytes, seq) == FAILED) return false;
+        if (revision >= markedRevision) markedRevision = revision;
         engine.markStateSaved(revision);
         try {
             ReminderReceiver.refresh(app, engine);

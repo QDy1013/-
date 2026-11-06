@@ -28,6 +28,7 @@ public class ProfileActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Ui.apply(this);
         Engine.Profile p = ProfileStore.load(this);
         buildUi(p);
     }
@@ -95,10 +96,7 @@ public class ProfileActivity extends Activity {
         root.addView(tip);
 
         setContentView(sv);
-        getWindow().setStatusBarColor(Ui.BG);
-        getWindow().setNavigationBarColor(Ui.BG);
-        sv.setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-                | (android.os.Build.VERSION.SDK_INT >= 26 ? android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0));
+        Ui.systemBars(this, sv);
     }
 
     /** 加一行"标签 + 输入框"，返回输入框。 */
@@ -135,7 +133,7 @@ public class ProfileActivity extends Activity {
     Button primaryButton(String text) {
         Button b = button(text);
         // 主按钮：品牌蓝底 + 纯白文字，浅色界面里唯一的高饱和块。
-        b.setTextColor(Color.WHITE);
+        b.setTextColor(Ui.ON_ACCENT);
         GradientDrawable g = new GradientDrawable();
         g.setColor(Ui.ACCENT);
         g.setCornerRadius(dp(this, 14));

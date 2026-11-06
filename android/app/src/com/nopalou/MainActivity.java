@@ -125,14 +125,45 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     private final Runnable clockRefresh = new Runnable() {
         @Override public void run() {
             if (!resumed) return;
-            onCardsChanged();
+            tickClock();
             uiHandler.postDelayed(this, 60_000L - System.currentTimeMillis() % 60_000L);
         }
     };
+    /** 首次打开时卡片逐张浮入；之后的刷新不再做入场动画，避免每次都闪。 */
+    private boolean firstRender;
+    /** 撤销 / 恢复后要淡入的那张卡。 */
+    private Engine.Card animateInCard;
+    /** 当前屏上卡片的倒计时行：每分钟只改文字，不重建整页。 */
+    private final List<DueBinding> dueBindings = new ArrayList<>();
+    /** 滚过大标题后出现的紧凑顶栏。 */
+    private LinearLayout compactBar;
+    private TextView compactTitle;
+    private boolean compactShown;
+    private boolean emptyShown;
+    /** 正在播完成动画、还没真正标记的卡。 */
+    private final java.util.Set<Engine.Card> pendingDone = new java.util.HashSet<>();
+    /** 上次整页渲染时的本地日期（年*1000+年内第几天），跨午夜就整页重排。 */
+    private int renderedDay;
+
+    private static final class DueBinding {
+        final Engine.Card card;
+        final TextView due;
+        final String bucket;
+        final int urgency;
+
+        DueBinding(Engine.Card card, TextView due, String bucket, int urgency) {
+            this.card = card;
+            this.due = due;
+            this.bucket = bucket;
+            this.urgency = urgency;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Ui.apply(this);
+        firstRender = b == null;
         if (b != null) {
             accessChecked = b.getBoolean("accessChecked", false);
             keywords = b.getString("keywords", "");
@@ -210,6 +241,13 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         uiHandler.removeCallbacks(searchRefresh);
         uiHandler.removeCallbacks(clockRefresh);
         renderQueued = false;
+        // 完成动画还没播完就离开页面（切到课表、锁屏、深浅色切换重建）：直接落定，不丢这次点击。
+        if (!pendingDone.isEmpty()) {
+            for (Engine.Card c : pendingDone) c.done = true;
+            pendingDone.clear();
+            if (demo == null) EngineHolder.saveAsync(this);
+        }
+        if (demo == null) EngineHolder.flush(400);
         if (engine != null && engine.listener == this) engine.listener = null;
         super.onPause();
     }
@@ -336,7 +374,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     }
 
     AlertDialog.Builder alert() {
-        return new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Light_Dialog_Alert);
+        return new AlertDialog.Builder(this, Ui.dialogTheme());
     }
 
     /**
@@ -447,6 +485,10 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
         cardList = new LinearLayout(this);
         cardList.setOrientation(LinearLayout.VERTICAL);
+        // 卡片的柔和投影和按压缩放会画到自身边界外，不能被父布局裁掉。
+        cardList.setClipChildren(false);
+        page.setClipChildren(false);
+        page.setClipToPadding(false);
         LinearLayout.LayoutParams listLp = lp(-1, -2);
         listLp.topMargin = dp(this, 4);
         page.addView(cardList, listLp);
@@ -494,7 +536,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         undoText.setSingleLine(true);
         undoText.setEllipsize(TextUtils.TruncateAt.END);
         undoBar.addView(undoText, new LinearLayout.LayoutParams(0, -2, 1));
-        undoAction = uiText("撤销", 14, Color.parseColor("#9DB0FF"), true);
+        undoAction = uiText("撤销", 14, Ui.INK_ACTION, true);
         undoAction.setGravity(Gravity.CENTER);
         undoAction.setPadding(dp(this, 14), 0, dp(this, 14), 0);
         undoAction.setBackground(Ui.ripple(this, null, Ui.withAlpha(Color.WHITE, 40), 10));
@@ -504,12 +546,61 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         undoLp.setMargins(dp(this, 16), 0, dp(this, 16), dp(this, 84));
         frame.addView(undoBar, undoLp);
 
+        buildCompactBar(frame);
+        listScroll.setOnScrollChangeListener((v, x, y, ox, oy) -> updateCompactBar(y));
+
         setContentView(frame);
-        getWindow().setStatusBarColor(Ui.BG);
-        getWindow().setNavigationBarColor(Ui.BG);
-        frame.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-                | (Build.VERSION.SDK_INT >= 26 ? View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0));
+        Ui.systemBars(this, frame);
+        getWindow().setNavigationBarColor(Ui.CARD);   // 和底部导航同色，连成一片
         root.requestFocus();
+    }
+
+    /**
+     * 紧凑顶栏：大标题滚出屏幕后，从顶部淡入一条「结论 + 读取状态」，
+     * 往下翻长列表时也知道今天几件；点它回到顶部。
+     */
+    private void buildCompactBar(FrameLayout frame) {
+        compactBar = new LinearLayout(this);
+        compactBar.setOrientation(LinearLayout.VERTICAL);
+        compactBar.setBackgroundColor(Ui.BG);
+        // 浅色用柔和投影分层；深色下投影看不见，改用一条细线。
+        if (!Ui.dark) compactBar.setElevation(dp(this, 3));
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(this, 20), 0, dp(this, 12), 0);
+        compactTitle = uiText("", 16, Ui.TEXT, true);
+        compactTitle.setSingleLine(true);
+        compactTitle.setEllipsize(TextUtils.TruncateAt.END);
+        row.addView(compactTitle, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView up = uiText("回到顶部", 13, Ui.ACCENT, true);
+        up.setGravity(Gravity.CENTER);
+        up.setPadding(dp(this, 12), 0, dp(this, 12), 0);
+        up.setBackground(Ui.ripple(this, null, Ui.press(), 16));
+        up.setOnClickListener(v -> listScroll.smoothScrollTo(0, 0));
+        row.addView(up, lp(-2, dp(this, 36)));
+        compactBar.addView(row, new LinearLayout.LayoutParams(-1, 0, 1));
+        if (Ui.dark) compactBar.addView(Ui.hairline(this));
+        compactBar.setOnClickListener(v -> listScroll.smoothScrollTo(0, 0));
+        compactBar.setVisibility(View.INVISIBLE);
+        compactBar.setAlpha(0f);
+        frame.addView(compactBar, new FrameLayout.LayoutParams(-1, dp(this, 52), Gravity.TOP));
+    }
+
+    private void updateCompactBar(int scrollY) {
+        if (compactBar == null || headline == null) return;
+        boolean show = scrollY > headline.getBottom() + dp(this, 4);
+        if (show == compactShown) return;
+        compactShown = show;
+        compactBar.animate().cancel();
+        if (show) {
+            compactBar.setVisibility(View.VISIBLE);
+            compactBar.setTranslationY(-dp(this, 8));
+            compactBar.animate().alpha(1f).translationY(0f).setDuration(160)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+        } else {
+            compactBar.animate().alpha(0f).translationY(-dp(this, 8)).setDuration(120)
+                    .withEndAction(() -> { if (!compactShown) compactBar.setVisibility(View.INVISIBLE); }).start();
+        }
     }
 
     TextView uiText(String text, float size, int color, boolean bold) {
@@ -611,15 +702,27 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         SpannableString s = new SpannableString(count == null ? label : label + "  " + count);
         if (count != null) {
             int start = s.length() - count.length();
-            s.setSpan(new ForegroundColorSpan(selected ? Ui.withAlpha(Color.WHITE, 170) : Ui.MUTE),
+            s.setSpan(new ForegroundColorSpan(selected ? Ui.withAlpha(Ui.CARD, 170) : Ui.MUTE),
                     start, s.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
+        // 文字和选中态没变就不重设背景：每次刷新都换 Drawable 会让涟漪中途被打断。
+        String key = s.toString() + (selected ? "#1" : "#0") + (Ui.dark ? "d" : "l");
+        if (key.equals(chip.getTag())) return;
+        boolean wasSelected = chip.isSelected();
+        chip.setTag(key);
         chip.setText(s);
-        chip.setTextColor(selected ? Color.WHITE : Ui.TEXT);
+        chip.setTextColor(selected ? Ui.CARD : Ui.TEXT);
         GradientDrawable bg = selected ? Ui.round(this, Ui.TEXT, 18) : Ui.round(this, Ui.CARD, 18);
         if (!selected) bg.setStroke(1, Ui.LINE);
         chip.setBackground(Ui.ripple(this, bg, Ui.press(), 18));
         chip.setSelected(selected);
+        if (selected && !wasSelected && chip.isAttachedToWindow()) {
+            // 选中时轻轻弹一下，确认点到了。
+            chip.setScaleX(0.94f);
+            chip.setScaleY(0.94f);
+            chip.animate().scaleX(1f).scaleY(1f).setDuration(220)
+                    .setInterpolator(new android.view.animation.OvershootInterpolator(2f)).start();
+        }
     }
 
     private void showFilterMenu() {
@@ -705,6 +808,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             s.setSpan(new ForegroundColorSpan(numColor), i, i + num.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         headline.setText(s);
+        if (compactTitle != null) compactTitle.setText(s);
 
         List<String> parts = new ArrayList<>();
         if (tomorrow > 0 && !"tomorrow".equals(lead)) parts.add("明天 " + tomorrow + " 件");
@@ -797,10 +901,24 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         return null;
     }
 
+    /**
+     * 切换筛选：列表淡入并轻微上浮，替代原来的“瞬间换一屏”；
+     * 已经往下翻过的话只滚回筛选栏的位置，不把整页甩回顶部。
+     */
     private void resetCardPage() {
         visibleLimit = PAGE_SIZE;
         render();
-        if (listScroll != null) listScroll.scrollTo(0, 0);
+        if (cardList != null) {
+            cardList.animate().cancel();
+            cardList.setAlpha(0f);
+            cardList.setTranslationY(dp(this, 10));
+            cardList.animate().alpha(1f).translationY(0f).setDuration(200)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+        }
+        if (listScroll != null && liveFilters != null) {
+            int anchor = Math.max(0, liveFilters.getTop() - dp(this, 8));
+            if (listScroll.getScrollY() > anchor) listScroll.smoothScrollTo(0, anchor);
+        }
     }
 
     private void showAllCards() {
@@ -837,8 +955,9 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
     /** 主按钮：靛蓝实心 + 白字。一个界面只放一个。 */
     Button stylePrimary(Button b) {
-        b.setBackground(Ui.ripple(this, Ui.round(this, Ui.ACCENT, 14), Ui.withAlpha(Color.WHITE, 60), 14));
-        b.setTextColor(Color.WHITE);
+        b.setBackground(Ui.ripple(this, Ui.round(this, Ui.ACCENT, 14), Ui.withAlpha(Ui.ON_ACCENT, 60), 14));
+        b.setTextColor(Ui.ON_ACCENT);
+        Ui.pressScale(b, 0.97f);
         b.setTextSize(15);
         b.setTypeface(Ui.medium());
         return b;
@@ -956,44 +1075,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
      * 通用底部面板：顶部圆角、从下往上滑入、最高占屏 88%，内容超出时可滚动，footer 固定在底部。
      */
     android.app.Dialog showSheet(View content, View footer) {
-        android.app.Dialog dialog = new android.app.Dialog(this);
-        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-        final int max = (int) (getResources().getDisplayMetrics().heightPixels * 0.88f);
-        LinearLayout sheet = new LinearLayout(this) {
-            @Override
-            protected void onMeasure(int widthSpec, int heightSpec) {
-                int size = View.MeasureSpec.getSize(heightSpec);
-                int cap = View.MeasureSpec.getMode(heightSpec) == View.MeasureSpec.UNSPECIFIED ? max : Math.min(size, max);
-                super.onMeasure(widthSpec, View.MeasureSpec.makeMeasureSpec(cap, View.MeasureSpec.AT_MOST));
-            }
-        };
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(dp(this, 20), dp(this, 10), dp(this, 20), dp(this, 18));
-        sheet.setBackground(Ui.topRound(this, Ui.CARD, 26));
-        View handle = new View(this);
-        handle.setBackground(Ui.round(this, Ui.LINE, 3));
-        LinearLayout.LayoutParams handleLp = lp(dp(this, 36), dp(this, 4));
-        handleLp.gravity = Gravity.CENTER_HORIZONTAL;
-        sheet.addView(handle, handleLp);
-        ScrollView scroll = new ScrollView(this);
-        scroll.setVerticalScrollBarEnabled(false);
-        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        scroll.addView(content);
-        sheet.addView(scroll, new LinearLayout.LayoutParams(-1, -2, 1f));
-        if (footer != null) sheet.addView(footer);
-        dialog.setContentView(sheet);
-        dialog.setCanceledOnTouchOutside(true);
-        dialog.show();
-        android.view.Window w = dialog.getWindow();
-        if (w != null) {
-            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
-            w.setGravity(Gravity.BOTTOM);
-            w.setLayout(-1, -2);
-            w.setDimAmount(0.4f);
-            w.setWindowAnimations(android.R.style.Animation_InputMethod);
-            w.setNavigationBarColor(Ui.CARD);
-        }
-        return dialog;
+        return Ui.sheet(this, content, footer);
     }
 
     /**
@@ -1198,6 +1280,11 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         long now = System.currentTimeMillis();
         if (sub != null) sub.setText(subLine());
         cardList.removeAllViews();
+        dueBindings.clear();
+        boolean stagger = firstRender;
+        firstRender = false;
+        Engine.Card enter = animateInCard;
+        animateInCard = null;
         Engine shown = demo == null ? engine : demo.engine;
         updateHeadline(shown, now);
         updateWindowTabs(shown, now);
@@ -1211,13 +1298,8 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         };
         headline.setOnLongClickListener(devStats);
         stats.setOnLongClickListener(devStats);
-        ClashPlan.Clash clash = ClashPlan.nearest(shown.all(), now);
-        if (clash != null) {
-            clashBanner.setText("撞车提醒 · " + clash.text() + "  ›");
-            clashBanner.setVisibility(View.VISIBLE);
-        } else {
-            clashBanner.setVisibility(View.GONE);
-        }
+        renderedDay = localDay(now);
+        updateClashBanner(shown, now);
         if (demo == null) {
             updateNotifStatus();
         } else {
@@ -1262,8 +1344,17 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 empty.setText("开启自动读取后，群里的作业、考试、接龙\n会自动整理到这里，不用再爬楼。");
             }
             cardList.addView(emptyBox);
+            if (!emptyShown) {
+                // 只在从“有卡”变成“空”时淡入，后台刷新不让空状态反复闪。
+                emptyBox.setAlpha(0f);
+                emptyBox.setTranslationY(dp(this, 8));
+                emptyBox.animate().alpha(1f).translationY(0f).setDuration(240)
+                        .setInterpolator(new DecelerateInterpolator()).start();
+            }
+            emptyShown = true;
             return;
         }
+        emptyShown = false;
         int displayed = Math.min(visibleLimit, list.size());
         Map<String, List<Engine.Card>> groups = new HashMap<>();
         for (int i = 0; i < displayed; i++) {
@@ -1271,12 +1362,20 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             String name = TodayView.bucket(card.deadline, card.needsConfirm, card.done, now);
             groups.computeIfAbsent(name, key -> new ArrayList<>()).add(card);
         }
+        int order = 0;
         for (int g = 0; g < TodayView.ORDER.length; g++) {
             String groupName = TodayView.ORDER[g];
             List<Engine.Card> group = groups.get(groupName);
             if (group == null) continue;
-            cardList.addView(groupHeader(groupName, group.size()));
-            for (Engine.Card card : group) cardList.addView(cardView(card, now));
+            View header = groupHeader(groupName, group.size());
+            cardList.addView(header);
+            if (stagger) enterAnim(header, order++);
+            for (Engine.Card card : group) {
+                View v = cardView(card, now);
+                cardList.addView(v);
+                if (stagger) enterAnim(v, order++);
+                else if (card == enter) popIn(v);
+            }
         }
         if (list.size() > displayed) {
             Button moreBtn = button("显示更多", v -> {
@@ -1331,10 +1430,20 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         row.setGravity(Gravity.CENTER_VERTICAL);
         int color = "已过期".equals(name) ? Ui.RED : "待确认".equals(name) ? Ui.AMBER_TX
                 : "已完成".equals(name) ? Ui.MUTE : Ui.TEXT;
+        if ("今天".equals(name) || "已过期".equals(name) || "待确认".equals(name)) {
+            // 需要注意的分组前加一个同色小圆点，扫一眼就能分出轻重。
+            View dot = new View(this);
+            dot.setBackground(Ui.disc(this, "今天".equals(name) ? Ui.ACCENT : color));
+            LinearLayout.LayoutParams dotLp = lp(dp(this, 6), dp(this, 6));
+            dotLp.rightMargin = dp(this, 8);
+            row.addView(dot, dotLp);
+        }
         row.addView(uiText(name, 15, color, true));
-        TextView num = uiText(String.valueOf(count), 13, Ui.MUTE, false);
+        TextView num = Ui.tag(this, String.valueOf(count), Ui.SUB, Ui.FILL);
+        num.setMinWidth(dp(this, 20));
+        num.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams numLp = lp(-2, -2);
-        numLp.leftMargin = dp(this, 6);
+        numLp.leftMargin = dp(this, 8);
         row.addView(num, numLp);
         LinearLayout.LayoutParams lp = lp(-1, -2);
         lp.leftMargin = dp(this, 4);
@@ -1356,12 +1465,17 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.HORIZONTAL);
         card.setPadding(dp(this, 4), dp(this, 16), dp(this, 16), dp(this, 16));
-        GradientDrawable face = Ui.round(this, Ui.CARD, 18);
-        face.setStroke(1, Ui.LINE);
-        card.setBackground(Ui.ripple(this, face, Ui.press(), 18));
+        if (c.done) {
+            // 已完成的卡退到背景里：不浮起、不投影，只留一层淡底。
+            GradientDrawable face = Ui.round(this, Ui.withAlpha(Ui.CARD, Ui.dark ? 140 : 170), 18);
+            card.setBackground(Ui.ripple(this, face, Ui.press(), 18));
+        } else {
+            Ui.cardSurface(card, 18);
+        }
+        Ui.pressScale(card, 0.985f);
 
         int ringColor = c.done ? Ui.MUTE : unsure ? Ui.AMBER_TX
-                : urgency >= 1 ? Ui.urgencyColor(urgency) : Color.parseColor("#B9B7B0");
+                : urgency >= 1 ? Ui.urgencyColor(urgency) : Ui.RING;
         Ui.CheckCircle circle = new Ui.CheckCircle(this, ringColor, c.done ? Ui.MUTE : Ui.GREEN, 22, c.done);
         FrameLayout checkZone = new FrameLayout(this);
         View check = new View(this);
@@ -1393,14 +1507,14 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                 kLp.rightMargin = dp(this, 7);
                 dueRow.addView(kindTag, kLp);
             }
-            String time = c.deadlineHint() != null ? c.deadlineHint() + " · 时刻待确认"
-                    : c.deadline == 0 ? "时间待确认 · 点开补充"
-                    : Engine.humanDeadline(c.deadline) + " · " + TodayView.countdown(c.deadline, now);
-            int dueColor = unsure ? Ui.AMBER_TX : urgency >= 1 ? Ui.urgencyColor(urgency) : Ui.SUB;
-            TextView due = uiText(time, 13, dueColor, true);
+            TextView due = uiText(dueLabel(c, now), 13, dueColor(c, now), true);
             due.setSingleLine(true);
             due.setEllipsize(TextUtils.TruncateAt.END);
             dueRow.addView(due, new LinearLayout.LayoutParams(0, -2, 1));
+            if (!unsure && c.deadline > 0) {
+                dueBindings.add(new DueBinding(c, due,
+                        TodayView.bucket(c.deadline, c.needsConfirm, c.done, now), urgency));
+            }
             if (c.updated) {
                 TextView upd = Ui.tag(this, "已更新", Ui.ACCENT, Ui.ACCENT_BG);
                 LinearLayout.LayoutParams uLp = lp(-2, -2);
@@ -1474,24 +1588,159 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
         if ("exam".equals(kind)) return Ui.tag(this, "考试", Ui.VIOLET, Ui.VIOLET_BG);
         if ("jielong".equals(kind)) return Ui.tag(this, "接龙", Ui.TEAL, Ui.TEAL_BG);
         if (Engine.PlatformNotice.KIND_SIGNIN.equals(kind)) return Ui.tag(this, "签到", Ui.ORANGE, Ui.ORANGE_BG);
-        if (Engine.PlatformNotice.KIND_GRADE.equals(kind)) return Ui.tag(this, "成绩", Ui.GREEN, Ui.withAlpha(Ui.GREEN, 28));
+        if (Engine.PlatformNotice.KIND_GRADE.equals(kind)) return Ui.tag(this, "成绩", Ui.GREEN, Ui.GREEN_BG);
         return null;
     }
 
-    /** 点完成圈：圆圈填充 + 对勾描出，内容淡出，0.4 秒后真正标记并给出撤销。 */
+    /** 卡片第二行的时间文字：与详情面板同一套说法。 */
+    private String dueLabel(Engine.Card c, long now) {
+        return c.deadlineHint() != null ? c.deadlineHint() + " · 时刻待确认"
+                : c.deadline == 0 ? "时间待确认 · 点开补充"
+                : Engine.humanDeadline(c.deadline) + " · " + TodayView.countdown(c.deadline, now);
+    }
+
+    private int dueColor(Engine.Card c, long now) {
+        boolean unsure = c.needsConfirm || c.deadline == 0 || c.deadlineHint() != null;
+        int urgency = TodayView.urgency(c.deadline, c.needsConfirm, c.done, now);
+        return unsure ? Ui.AMBER_TX : urgency >= 1 ? Ui.urgencyColor(urgency) : Ui.SUB;
+    }
+
+    /**
+     * 每分钟一次的轻量刷新：只改倒计时文字、顶部日期和大标题。
+     * 某张卡跨了分组（今天 → 已过期）或紧急程度变了，才整页重排。
+     */
+    private void tickClock() {
+        if (cardList == null) return;
+        long now = System.currentTimeMillis();
+        for (DueBinding b : dueBindings) {
+            Engine.Card c = b.card;
+            if (c.done || c.deadline <= 0
+                    || !b.bucket.equals(TodayView.bucket(c.deadline, c.needsConfirm, c.done, now))
+                    || b.urgency != TodayView.urgency(c.deadline, c.needsConfirm, c.done, now)) {
+                onCardsChanged();
+                return;
+            }
+        }
+        if (localDay(now) != renderedDay) {
+            // 跨午夜：今天/明天分组、筛选结果都变了，整页重排。
+            onCardsChanged();
+            return;
+        }
+        for (DueBinding b : dueBindings) {
+            String text = dueLabel(b.card, now);
+            if (!text.contentEquals(b.due.getText())) b.due.setText(text);
+        }
+        if (sub != null) sub.setText(subLine());
+        Engine shown = demo == null ? engine : demo.engine;
+        updateHeadline(shown, now);
+        updateWindowTabs(shown, now);
+        updateClashBanner(shown, now);
+        if (demo == null) updateNotifStatus();
+    }
+
+    private static int localDay(long now) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(now);
+        return cal.get(Calendar.YEAR) * 1000 + cal.get(Calendar.DAY_OF_YEAR);
+    }
+
+    private void updateClashBanner(Engine shown, long now) {
+        ClashPlan.Clash clash = ClashPlan.nearest(shown.all(), now);
+        if (clash != null) {
+            clashBanner.setText("撞车提醒 · " + clash.text() + "  ›");
+            clashBanner.setVisibility(View.VISIBLE);
+        } else {
+            clashBanner.setVisibility(View.GONE);
+        }
+    }
+
+    /** 首屏入场：逐张从下方 14dp 浮入，间隔 28ms，最多错开 8 张。 */
+    private void enterAnim(View v, int index) {
+        v.setAlpha(0f);
+        v.setTranslationY(dp(this, 14));
+        v.animate().alpha(1f).translationY(0f)
+                .setStartDelay(Math.min(index, 8) * 28L)
+                .setDuration(260)
+                .setInterpolator(new DecelerateInterpolator(1.6f))
+                .start();
+    }
+
+    /** 撤销 / 恢复回来的卡：从略小淡入，提示“它回来了”。 */
+    private void popIn(View v) {
+        v.setAlpha(0f);
+        v.setScaleX(0.96f);
+        v.setScaleY(0.96f);
+        v.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(240)
+                .setInterpolator(new DecelerateInterpolator()).start();
+        // 回来的卡不在屏内时滚过去，免得用户以为撤销没生效。
+        v.post(() -> {
+            if (listScroll == null) return;
+            int[] at = new int[2];
+            int[] sc = new int[2];
+            v.getLocationInWindow(at);
+            listScroll.getLocationInWindow(sc);
+            int top = at[1] - sc[1];
+            if (top < 0 || top + v.getHeight() > listScroll.getHeight()) {
+                listScroll.smoothScrollBy(0, top - listScroll.getHeight() / 3);
+            }
+        });
+    }
+
+    /**
+     * 点完成圈：圆圈填充 + 对勾描出（280ms）→ 整张卡向右淡出并收起高度（260ms），
+     * 下面的卡顺势补上来，再真正标记并给出撤销。不再“啪”地整屏重排。
+     */
     void animateComplete(View card, Ui.CheckCircle circle, View body, Engine.Card c) {
         if (Boolean.TRUE.equals(card.getTag())) return;
         card.setTag(Boolean.TRUE);
         card.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+        pendingDone.add(c);
         ValueAnimator anim = ValueAnimator.ofFloat(0f, 1f);
         anim.setDuration(280);
         anim.setInterpolator(new DecelerateInterpolator());
         anim.addUpdateListener(a -> circle.setProgress((float) a.getAnimatedValue()));
         anim.start();
-        body.animate().alpha(0.4f).setDuration(260).start();
-        uiHandler.postDelayed(() -> {
+        body.animate().alpha(0.45f).setDuration(240).start();
+        Runnable finish = () -> {
+            pendingDone.remove(c);
+            if (isFinishing() || isDestroyed()) return;
             if (!c.done) toggleDone(c);
-        }, 420);
+            else render();   // 已在 onPause 里落定：重排一次，收掉压扁的卡
+        };
+        uiHandler.postDelayed(() -> {
+            if (c.done || !card.isAttachedToWindow()) finish.run();
+            else collapse(card, finish);
+        }, 330);
+    }
+
+    /** 卡片向右滑出 + 高度和下边距收到 0，结束后执行 end。 */
+    private void collapse(View card, Runnable end) {
+        final int h = card.getHeight();
+        final ViewGroup.LayoutParams raw = card.getLayoutParams();
+        final LinearLayout.LayoutParams p = raw instanceof LinearLayout.LayoutParams
+                ? (LinearLayout.LayoutParams) raw : null;
+        final int margin = p == null ? 0 : p.bottomMargin;
+        card.animate().alpha(0f).translationX(dp(this, 36)).setDuration(220)
+                .setInterpolator(new android.view.animation.AccelerateInterpolator()).start();
+        ValueAnimator shrink = ValueAnimator.ofFloat(1f, 0f);
+        shrink.setStartDelay(90);
+        shrink.setDuration(240);
+        shrink.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+        shrink.addUpdateListener(a -> {
+            float f = (float) a.getAnimatedValue();
+            raw.height = Math.max(1, (int) (h * f));
+            if (p != null) p.bottomMargin = (int) (margin * f);
+            card.setLayoutParams(raw);
+        });
+        shrink.addListener(new android.animation.AnimatorListenerAdapter() {
+            boolean done;
+            @Override public void onAnimationEnd(android.animation.Animator a) {
+                if (done) return;
+                done = true;
+                end.run();
+            }
+        });
+        shrink.start();
     }
 
     /** 来源小图标：应用真实图标优先，取不到用品牌色文字徽标。 */
@@ -1771,7 +2020,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                     if (shown.dismissCard(c, System.currentTimeMillis())) {
                         holder[0].dismiss();
                         render();
-                        if (demo == null) EngineHolder.save(this);
+                        if (demo == null) EngineHolder.saveAsync(this);
                     }
                 }).show());
         links.addView(remove, new LinearLayout.LayoutParams(0, dp(this, 44), 1));
@@ -1829,13 +2078,14 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
     void toggleDone(Engine.Card c) {
         if (c.done) {
             c.done = false;   // 恢复成待办
+            animateInCard = c;
             hideUndo();
         } else {
             c.done = true;    // 标记已完成
             showUndo(c);
         }
         render();
-        if (demo == null) EngineHolder.save(this);
+        if (demo == null) EngineHolder.saveAsync(this);
     }
 
     private final Runnable hideUndoRunnable = this::hideUndo;
@@ -1847,8 +2097,9 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             hideUndo();
             if (c.done) {
                 c.done = false;
+                animateInCard = c;
                 render();
-                if (demo == null) EngineHolder.save(this);
+                if (demo == null) EngineHolder.saveAsync(this);
             }
         });
         uiHandler.removeCallbacks(hideUndoRunnable);
@@ -1897,7 +2148,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                                     + "\n\n恢复后请核对时间，移除期间的群消息变更可能未应用到这张卡。")
                             .setPositiveButton("恢复", (d, w) -> {
                                 if (shown.restoreCard(card)) {
-                                    if (demo == null) EngineHolder.save(this);
+                                    if (demo == null) EngineHolder.saveAsync(this);
                                     showAllCards();
                                     Toast.makeText(this, "已恢复，请核对事项时间", Toast.LENGTH_SHORT).show();
                                 } else {
@@ -1912,7 +2163,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
                         .setMessage("这些卡片将无法恢复。")
                         .setPositiveButton("清空", (d, w) -> {
                             shown.clearRemovedCards();
-                            if (demo == null) EngineHolder.save(this);
+                            if (demo == null) EngineHolder.saveAsync(this);
                         })
                         .setNegativeButton("取消", (d, w) -> showRemovedCards())
                         .show())
@@ -2103,7 +2354,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
 
     private void applyGroupMode(String gid, String name, String pkg, String mode) {
         int removed = engine.setGroupMode(gid, name, pkg, mode, System.currentTimeMillis());
-        EngineHolder.save(this);
+        EngineHolder.saveAsync(this);
         render();
         if (groupDialog != null && groupDialog.isShowing()) fillGroups();
         String msg = Engine.MODE_IGNORE.equals(mode)
@@ -2280,7 +2531,7 @@ public class MainActivity extends Activity implements Engine.SelectedListener {
             }
             Engine shown = demo == null ? engine : demo.engine;
             if (shown.editCard(card, label, deadline[0])) {
-                if (demo == null) EngineHolder.save(this);
+                if (demo == null) EngineHolder.saveAsync(this);
                 render();
             } else {
                 Toast.makeText(this, "这张卡片已移除", Toast.LENGTH_SHORT).show();

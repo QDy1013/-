@@ -22,7 +22,8 @@ final class CourseUi {
         return t;
     }
     static TextView action(Context c, String value, boolean primary, Runnable click) {
-        TextView t = text(c, value, 14, primary ? Color.WHITE : Ui.TEXT, true);
+        TextView t = text(c, value, 14, primary ? Ui.ON_ACCENT : Ui.TEXT, true);
+        Ui.pressScale(t, 0.97f);
         t.setGravity(Gravity.CENTER);
         t.setMinHeight(Ui.dp(c, 48));
         t.setPadding(Ui.dp(c, 14), Ui.dp(c, 10), Ui.dp(c, 14), Ui.dp(c, 10));

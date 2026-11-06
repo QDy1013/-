@@ -55,6 +55,7 @@ public class NwpuImportActivity extends Activity {
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
+        Ui.apply(this);
         // Login fields and school verification pages must not enter screenshots or recent-task previews.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
@@ -97,7 +98,7 @@ public class NwpuImportActivity extends Activity {
         ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         LinearLayout fields = CourseUi.column(this); fields.setPadding(dp(24), dp(4), dp(24), dp(24)); scroll.addView(fields);
         LinearLayout schoolRow = new LinearLayout(this); schoolRow.setGravity(Gravity.CENTER_VERTICAL);
-        schoolRow.setPadding(dp(18), dp(18), dp(18), dp(18)); schoolRow.setBackground(Ui.round(this, Ui.CARD, 16)); fields.addView(schoolRow);
+        schoolRow.setPadding(dp(18), dp(18), dp(18), dp(18)); schoolRow.setBackground(Ui.ripple(this, Ui.round(this, Ui.CARD, 16), Ui.press(), 16)); fields.addView(schoolRow);
         schoolChoice = text("", 16, Ui.TEXT, true); schoolRow.addView(schoolChoice, new LinearLayout.LayoutParams(0, -2, 1));
         android.widget.ImageView choose = new android.widget.ImageView(this); choose.setImageDrawable(CourseUi.glyph(this, "down")); schoolRow.addView(choose, new LinearLayout.LayoutParams(dp(20), dp(20)));
         schoolRow.setContentDescription("选择学校"); schoolRow.setOnClickListener(v -> chooseSchool()); schoolRow.setFocusable(true);
@@ -130,15 +131,13 @@ public class NwpuImportActivity extends Activity {
         ProgressBar spinner = new ProgressBar(this); progress.addView(spinner, new LinearLayout.LayoutParams(dp(36), dp(36)));
         CourseUi.gap(progress, 22); progress.addView(text("登录 · 读取课表 · 自动保存", 13, Ui.SUB, false));
         waiting = progress; content.addView(waiting, new FrameLayout.LayoutParams(-1, -1)); waiting.setVisibility(View.GONE);
-        setContentView(root); getWindow().setStatusBarColor(Ui.BG); getWindow().setNavigationBarColor(Ui.BG);
-        root.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR |
-                (android.os.Build.VERSION.SDK_INT >= 26 ? View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0));
+        setContentView(root); Ui.systemBars(this, root);
     }
     private void chooseSchool() {
         if (busy || saving) return;
         String[] names = new String[TimetableSchool.ALL.length];
         for (int i = 0; i < names.length; i++) names[i] = TimetableSchool.ALL[i].name + (TimetableSchool.ALL[i].trial ? "（测试中）" : "");
-        new AlertDialog.Builder(this).setTitle("选择你的学校").setItems(names, (d, i) -> {
+        new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("选择你的学校").setItems(names, (d, i) -> {
             school = TimetableSchool.ALL[i]; account.setText(""); password.setText(""); lastDiagnostic = ""; lastFailure = "";
             getPreferences(MODE_PRIVATE).edit().putString("school", school.id).apply(); updateSchool(); feedback.setVisibility(View.GONE);
         }).setNegativeButton("取消", null).show();
