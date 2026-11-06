@@ -1,221 +1,297 @@
 package com.nopalou;
 
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.DatePickerDialog;
-import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.SslErrorHandler;
-import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import org.json.JSONObject;
 import org.json.JSONTokener;
-import java.util.Calendar;
 
-/** School login stays in its HTTPS page. Only the requested timetable crosses into Java. */
+/** Credentials -> official authentication -> current semester -> atomic save, with no preview step. */
 public class NwpuImportActivity extends Activity {
     static final String COURSE_URL = "https://jwxt.nwpu.edu.cn/student/for-std/course-table";
     static final String LOGIN_URL = "https://jwxt.nwpu.edu.cn/student/sso-login";
-    WebView web;
-    TextView status;
-    Button read;
-    String script;
-    String token;
-    long deadline;
-    boolean reading, saving;
-    final Handler handler = new Handler(Looper.getMainLooper());
-    final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private WebView web;
+    private FrameLayout content;
+    private View form, waiting;
+    private EditText account, password;
+    private TextView status, hint, submit;
+    private String importScript, loginScript;
+    private String pendingAccount = "", pendingPassword = "", readToken;
+    private boolean busy, submitted, reading, saving, reuseSession, courseOpened;
+    private long deadline, courseDeadline, readDeadline;
+    private int generation;
+    private long loginReadyDeadline;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final Runnable driver = this::drive;
 
-    @Override public void onCreate(Bundle state) {
-        super.onCreate(state);
-        try (java.io.InputStream in = getAssets().open("nwpu-import.js");
-             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
-            byte[] buffer = new byte[4096]; int n;
-            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
-            script = out.toString("UTF-8");
-        } catch (Exception e) { Toast.makeText(this, "导入组件无法加载", Toast.LENGTH_LONG).show(); finish(); return; }
-        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(Ui.BG);
-        TextView title = label(root, "西工大课表导入", 22);
-        title.setTypeface(Ui.medium());
-        label(root, "使用翱翔门户的统一身份认证登录，成功后打开个人课表、选择学期，再点「导入当前学期」。", 13);
-        status = label(root, "正在打开学校统一身份认证…", 12);
-        LinearLayout bar = new LinearLayout(this); root.addView(bar);
-        button(bar, "统一认证", () -> { if (!saving) web.loadUrl(LOGIN_URL); });
-        button(bar, "打开课表", () -> { if (!saving) web.loadUrl(COURSE_URL); });
-        button(bar, "刷新", () -> { if (!saving) web.reload(); });
-        read = button(root, "导入当前学期", this::begin);
-        web = new WebView(this);
-        WebSettings settings = web.getSettings();
-        settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
-        settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setSaveFormData(false);
-        settings.setBuiltInZoomControls(true); settings.setDisplayZoomControls(false);
-        settings.setUseWideViewPort(true); settings.setLoadWithOverviewMode(true);
+    @Override public void onCreate(Bundle b) {
+        super.onCreate(b);
+        // Login fields and school verification pages must not enter screenshots or recent-task previews.
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        try { importScript = asset("nwpu-import.js"); loginScript = asset("nwpu-login.js"); }
+        catch (Exception e) { Toast.makeText(this, "导入组件无法加载", Toast.LENGTH_LONG).show(); finish(); return; }
+        buildUi();
+        if (getIntent().getBooleanExtra("reuse_session", false)) startWithSession();
+    }
+    private String asset(String name) throws Exception {
+        try (java.io.InputStream in = getAssets().open(name); java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            byte[] b = new byte[4096]; int n; while ((n = in.read(b)) != -1) out.write(b, 0, n);
+            return out.toString("UTF-8");
+        }
+    }
+    private int dp(float n) { return Ui.dp(this, n); }
+    private TextView text(String s, float size, int color, boolean bold) { return CourseUi.text(this, s, size, color, bold); }
+    private void buildUi() {
+        LinearLayout root = CourseUi.column(this); root.setBackgroundColor(Ui.BG);
+        LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); bar.setPadding(dp(8), dp(6), dp(16), dp(6));
+        root.addView(bar);
+        TextView back = text("‹", 29, Ui.TEXT, false); back.setGravity(Gravity.CENTER);
+        back.setContentDescription("返回"); back.setOnClickListener(v -> { if (!saving) finish(); });
+        bar.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        bar.addView(text("导入课表", 19, Ui.TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
+        TextView secure = Ui.tag(this, "校方认证", Ui.ACCENT, Ui.ACCENT_BG); bar.addView(secure);
+        LinearLayout intro = CourseUi.column(this); intro.setPadding(dp(24), dp(14), dp(24), dp(20)); root.addView(intro);
+        status = text("登录一次，课表就位", 25, Ui.TEXT, true); intro.addView(status);
+        hint = text("自动获取本学期课程，保存后随时查看", 12, Ui.SUB, false); hint.setPadding(0, dp(10), 0, 0); intro.addView(hint);
+        content = new FrameLayout(this); root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
+        web = new WebView(this); web.setVisibility(View.INVISIBLE); content.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        configureWeb();
+        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout fields = CourseUi.column(this); fields.setPadding(dp(24), dp(4), dp(24), dp(24)); scroll.addView(fields);
+        TextView school = text("西北工业大学", 17, Ui.TEXT, true);
+        school.setPadding(dp(18), dp(18), dp(18), dp(18)); school.setBackground(Ui.round(this, Ui.CARD, 16)); fields.addView(school);
+        CourseUi.gap(fields, 25); fields.addView(text("翱翔门户账号", 12, Ui.SUB, true)); CourseUi.gap(fields, 9);
+        account = input("学号 / 手机号 / 邮箱", false); fields.addView(account, CourseUi.row(dp(54)));
+        CourseUi.gap(fields, 20); fields.addView(text("密码", 12, Ui.SUB, true)); CourseUi.gap(fields, 9);
+        LinearLayout passwordRow = new LinearLayout(this); passwordRow.setGravity(Gravity.CENTER_VERTICAL);
+        passwordRow.setBackground(Ui.round(this, Ui.CARD, 14)); fields.addView(passwordRow, CourseUi.row(dp(54)));
+        password = input("请输入翱翔门户密码", true); password.setBackgroundColor(Color.TRANSPARENT);
+        passwordRow.addView(password, new LinearLayout.LayoutParams(0, -1, 1));
+        TextView eye = text("显示", 12, Ui.SUB, true); eye.setGravity(Gravity.CENTER); eye.setContentDescription("显示或隐藏密码");
+        passwordRow.addView(eye, new LinearLayout.LayoutParams(dp(52), -1));
+        eye.setOnClickListener(v -> {
+            boolean hidden = password.getTransformationMethod() instanceof android.text.method.PasswordTransformationMethod;
+            password.setTransformationMethod(hidden ? null : android.text.method.PasswordTransformationMethod.getInstance());
+            password.setSelection(password.length()); eye.setText(hidden ? "隐藏" : "显示");
+        });
+        CourseUi.gap(fields, 28);
+        submit = CourseUi.action(this, "一键导入", true, this::startWithCredentials); fields.addView(submit, CourseUi.row(dp(52)));
+        CourseUi.gap(fields, 16);
+        TextView note = text("账号密码仅用于学校认证，不在本机保存。\n如学校要求验证码，完成后会自动继续导入。", 11, Ui.SUB, false);
+        note.setLineSpacing(dp(4), 1f); fields.addView(note);
+        password.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_GO);
+        password.setOnEditorActionListener((v, action, event) -> { if (action == android.view.inputmethod.EditorInfo.IME_ACTION_GO) { startWithCredentials(); return true; } return false; });
+        form = scroll; content.addView(form, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout progress = CourseUi.column(this); progress.setGravity(Gravity.CENTER); progress.setBackgroundColor(Ui.BG);
+        ProgressBar spinner = new ProgressBar(this); progress.addView(spinner, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        CourseUi.gap(progress, 22); progress.addView(text("登录 · 读取课表 · 自动保存", 13, Ui.SUB, false));
+        waiting = progress; content.addView(waiting, new FrameLayout.LayoutParams(-1, -1)); waiting.setVisibility(View.GONE);
+        setContentView(root); getWindow().setStatusBarColor(Ui.BG); getWindow().setNavigationBarColor(Ui.BG);
+        root.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR |
+                (android.os.Build.VERSION.SDK_INT >= 26 ? View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0));
+    }
+    private EditText input(String placeholder, boolean secret) {
+        EditText e = new EditText(this); e.setHint(placeholder); e.setTextSize(15); e.setTextColor(Ui.TEXT); e.setHintTextColor(Ui.MUTE);
+        e.setSingleLine(true); e.setSaveEnabled(false); e.setPadding(dp(16), 0, dp(12), 0); e.setBackground(Ui.round(this, Ui.CARD, 14));
+        e.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
+        return e;
+    }
+    private void configureWeb() {
+        WebSettings s = web.getSettings(); s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true);
+        s.setAllowFileAccess(false); s.setAllowContentAccess(false); s.setSaveFormData(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW); s.setUseWideViewPort(true); s.setLoadWithOverviewMode(true);
+        s.setBuiltInZoomControls(true); s.setDisplayZoomControls(false);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false);
         web.setWebViewClient(new WebViewClient() {
-            @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return !navigationAllowed(request.getUrl());
+            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) { return !navigationAllowed(r.getUrl()); }
+            @Override public boolean shouldOverrideUrlLoading(WebView v, String u) { return !navigationAllowed(Uri.parse(u)); }
+            @Override public void onPageFinished(WebView v, String u) {
+                if (busy && !reading && !saving) schedule(150);
             }
-            @Override public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                return !navigationAllowed(Uri.parse(url));
+            @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
+                if (r.isForMainFrame() && busy) fail("学校网页暂时无法打开，请检查网络后重试");
             }
-            @Override public void onPageStarted(WebView view, String url, Bitmap icon) {
-                stopReading(); status.setText("正在加载校方网页…");
-            }
-            @Override public void onPageFinished(WebView view, String url) {
-                Uri page = Uri.parse(url);
-                if ("jwxt.nwpu.edu.cn".equals(page.getHost()) && "/student/login".equals(page.getPath())) {
-                    status.setText("当前是教务独立账号入口。使用翱翔门户账号请点「统一认证」。");
-                } else {
-                    status.setText(isCourse(url) ? "选择学期，等课表加载后点击导入" : "请在学校统一认证网页完成登录；登录后点「打开课表」");
-                }
-            }
-            @Override public void onReceivedError(WebView view, WebResourceRequest r, WebResourceError e) {
-                if (r.isForMainFrame()) { stopReading(); status.setText("网页加载失败，请检查网络后刷新；如学校要求校内网络，请先连接。"); }
-            }
-            @Override public void onReceivedSslError(WebView view, SslErrorHandler h, SslError e) {
-                h.cancel(); stopReading(); status.setText("校方网页证书验证失败，请稍后重试");
-            }
+            @Override public void onReceivedSslError(WebView v, SslErrorHandler h, SslError e) { h.cancel(); fail("校方证书验证失败，请稍后重试"); }
         });
-        root.addView(web, new LinearLayout.LayoutParams(-1, 0, 1));
-        button(root, "退出教务登录", () -> {
-            if (saving) return;
-            stopReading(); web.stopLoading(); web.loadUrl("about:blank");
-            CookieManager.getInstance().removeAllCookies(value -> {
-                CookieManager.getInstance().flush();
-                android.webkit.WebStorage.getInstance().deleteAllData();
-                if (isDestroyed()) return;
-                web.clearCache(true); web.clearHistory(); status.setText("已清除本 App 中的教务登录状态，可返回查看课表");
-            });
-        });
-        setContentView(root);
-        getWindow().setStatusBarColor(Ui.BG); getWindow().setNavigationBarColor(Ui.BG);
-        root.setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-        web.loadUrl(LOGIN_URL);
     }
     static boolean navigationAllowed(Uri u) {
-        String host = u.getHost();
-        return "https".equals(u.getScheme()) && (u.getPort() == -1 || u.getPort() == 443) && host != null &&
-                (host.equals("nwpu.edu.cn") || host.endsWith(".nwpu.edu.cn")) && u.getUserInfo() == null;
+        String h = u.getHost(); return "https".equals(u.getScheme()) && (u.getPort() == -1 || u.getPort() == 443) &&
+                h != null && (h.equals("nwpu.edu.cn") || h.endsWith(".nwpu.edu.cn")) && u.getUserInfo() == null;
     }
     static boolean isCourse(String url) {
-        if (url == null) return false;
-        Uri u = Uri.parse(url);
-        String path = u.getPath();
-        return navigationAllowed(u) && "jwxt.nwpu.edu.cn".equals(u.getHost()) && path != null &&
-                (path.equals("/student/for-std/course-table") || path.startsWith("/student/for-std/course-table/"));
+        if (url == null) return false; Uri u = Uri.parse(url); String p = u.getPath();
+        return navigationAllowed(u) && "jwxt.nwpu.edu.cn".equals(u.getHost()) && p != null &&
+                (p.equals("/student/for-std/course-table") || p.startsWith("/student/for-std/course-table/"));
     }
-    void begin() {
-        if (reading || saving) return;
-        if (!isCourse(web.getUrl())) { status.setText("请先登录并点击「打开课表」"); return; }
-        reading = true; read.setEnabled(false);
-        status.setText("正在读取当前学期课表…");
-        token = java.util.UUID.randomUUID().toString();
-        String active = token;
-        deadline = android.os.SystemClock.elapsedRealtime() + 22000;
-        web.evaluateJavascript(script + "\nNwpuImport.start(" + JSONObject.quote(active) + ");", ignored -> poll(active));
+    private boolean isLogin(String url) {
+        if (url == null) return false; Uri u = Uri.parse(url);
+        return navigationAllowed(u) && "uis.nwpu.edu.cn".equals(u.getHost()) && "/cas/login".equals(u.getPath());
     }
-    void poll(String active) {
-        if (!reading || !active.equals(token) || isFinishing() || isDestroyed()) return;
-        if (!isCourse(web.getUrl())) { fail("页面已改变，请回到个人课表后重试"); return; }
-        if (android.os.SystemClock.elapsedRealtime() > deadline) { fail("读取超时，请刷新课表后重试"); return; }
-        web.evaluateJavascript("JSON.stringify(window.__louTimetableResult || null)", value -> {
-            if (!reading || !active.equals(token) || isDestroyed() || !isCourse(web.getUrl())) return;
+    private void startWithCredentials() {
+        if (busy || saving) return;
+        if (account.getText().toString().trim().isEmpty()) { account.setError("请输入账号"); return; }
+        if (password.length() == 0) { password.setError("请输入密码"); return; }
+        pendingAccount = account.getText().toString().trim(); pendingPassword = password.getText().toString();
+        ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(password.getWindowToken(), 0);
+        reset(false); int active = generation;
+        // A freshly entered account must never accidentally import a different existing session.
+        CookieManager.getInstance().removeAllCookies(value -> {
+            if (!busy || active != generation || isDestroyed()) return;
+            CookieManager.getInstance().flush(); android.webkit.WebStorage.getInstance().deleteAllData();
+            web.clearCache(true); web.loadUrl(LOGIN_URL); schedule(500);
+        });
+    }
+    private void startWithSession() { reset(true); web.loadUrl(LOGIN_URL); schedule(500); }
+    private void reset(boolean reuse) {
+        generation++; busy = true; submitted = false; reading = false; courseOpened = false; reuseSession = reuse;
+        deadline = android.os.SystemClock.elapsedRealtime() + 60_000; courseDeadline = 0; loginReadyDeadline = 0;
+        showProgress("正在连接学校认证", "认证完成后自动读取并保存课表"); submit.setEnabled(false);
+    }
+    private void showProgress(String title, String detail) {
+        status.setText(title); hint.setText(detail); form.setVisibility(View.GONE); web.setVisibility(View.INVISIBLE); waiting.setVisibility(View.VISIBLE);
+    }
+    private void showChallenge() {
+        deadline = android.os.SystemClock.elapsedRealtime() + 300_000;
+        status.setText("请完成学校安全验证"); hint.setText("验证通过后自动导入，无需再点其他按钮");
+        form.setVisibility(View.GONE); waiting.setVisibility(View.GONE); web.setVisibility(View.VISIBLE);
+    }
+    private void schedule(long delay) { handler.removeCallbacks(driver); if (busy && !reading && !saving) handler.postDelayed(driver, delay); }
+    private JSONObject result(String value) throws Exception {
+        Object raw = new JSONTokener(value).nextValue(); return raw instanceof String ? new JSONObject((String) raw) : new JSONObject();
+    }
+    private void drive() {
+        if (!busy || reading || saving || isFinishing() || isDestroyed()) return;
+        if (android.os.SystemClock.elapsedRealtime() > deadline) { fail("登录等待超时，请重新导入"); return; }
+        String url = web.getUrl(); int active = generation;
+        if (isCourse(url)) {
+            if (courseDeadline == 0) courseDeadline = android.os.SystemClock.elapsedRealtime() + 20_000;
+            showProgress("正在读取本学期课表", "自动识别学期与开学日期");
+            web.evaluateJavascript(importScript + "\nJSON.stringify((function(){try{NwpuImport.context(window,document);return {ready:true};}catch(e){return {ready:false};}})())", value -> {
+                if (!current(active)) return;
+                try { if (result(value).optBoolean("ready")) { beginRead(); return; } } catch (Exception ignored) { }
+                if (android.os.SystemClock.elapsedRealtime() > courseDeadline) { fail("未能取得当前学期课表，请稍后重试"); return; }
+                schedule(500);
+            }); return;
+        }
+        if (isLogin(url)) {
+            if (loginReadyDeadline == 0) loginReadyDeadline = android.os.SystemClock.elapsedRealtime() + 20_000;
+            web.evaluateJavascript(loginScript + "\nJSON.stringify(NwpuLogin.inspect())", value -> {
+                if (!current(active)) return;
+                try {
+                    JSONObject r = result(value); String phase = r.optString("phase");
+                    if ("loading".equals(phase) && android.os.SystemClock.elapsedRealtime() > loginReadyDeadline) {
+                        fail("学校认证页未加载完成或已更新，请稍后重试"); return;
+                    }
+                    if ("error".equals(phase)) { fail(r.optString("message", "学校未通过登录验证")); return; }
+                    if ("challenge".equals(phase)) { showChallenge(); schedule(600); return; }
+                    if ("ready".equals(phase)) {
+                        if (reuseSession && pendingPassword.isEmpty()) { fail("登录已过期，请输入账号密码重新导入"); return; }
+                        if (!submitted && !pendingPassword.isEmpty()) { submitCredentials(active); return; }
+                        if (submitted) { fail("学校未完成登录验证，请核对账号密码后重试"); return; }
+                    } else if ("submitted".equals(phase)) {
+                        showProgress("学校正在验证登录", "认证成功后会自动读取课表");
+                    }
+                } catch (Exception ignored) { }
+                schedule(600);
+            }); return;
+        }
+        Uri page = url == null ? Uri.EMPTY : Uri.parse(url);
+        if ("jwxt.nwpu.edu.cn".equals(page.getHost()) && !"/student/sso-login".equals(page.getPath())) {
+            if ("/student/login".equals(page.getPath())) { fail("学校统一认证未完成，请重新导入"); return; }
+            if (!courseOpened) { courseOpened = true; showProgress("认证成功，正在获取课表", "自动读取当前学期"); web.loadUrl(COURSE_URL); }
+        } else if (page.getHost() != null && page.getHost().endsWith("nwpu.edu.cn") && submitted) showChallenge();
+        schedule(600);
+    }
+    private boolean current(int active) { return active == generation && busy && !isFinishing() && !isDestroyed(); }
+    private void submitCredentials(int active) {
+        String expression = "JSON.stringify(NwpuLogin.submit(" + JSONObject.quote(pendingAccount) + "," + JSONObject.quote(pendingPassword) + "))";
+        web.evaluateJavascript(expression, value -> {
+            if (!current(active)) return;
             try {
-                Object decoded = new JSONTokener(value).nextValue();
-                if (decoded instanceof String) {
-                    JSONObject r = new JSONObject((String) decoded);
-                    if (active.equals(r.optString("token"))) {
-                        if ("ok".equals(r.optString("status"))) {
-                            Timetable candidate = new Timetable(r.getJSONObject("data").toString());
-                            stopReading(); preview(candidate); return;
-                        }
-                        if ("error".equals(r.optString("status"))) { fail(r.optString("message", "读取失败")); return; }
+                JSONObject r = result(value);
+                if ("error".equals(r.optString("phase"))) { fail(r.optString("message")); return; }
+                if ("submitted".equals(r.optString("phase"))) {
+                    submitted = true; pendingAccount = ""; pendingPassword = ""; password.setText("");
+                    showProgress("学校正在验证登录", "如需安全验证，会自动显示校方页面");
+                }
+            } catch (Exception ignored) { }
+            schedule(500);
+        });
+    }
+    private void beginRead() {
+        if (reading || saving || !busy) return;
+        reading = true; readToken = java.util.UUID.randomUUID().toString(); readDeadline = android.os.SystemClock.elapsedRealtime() + 22_000;
+        String token = readToken; int active = generation;
+        web.evaluateJavascript("NwpuImport.start(" + JSONObject.quote(token) + ");", ignored -> pollRead(active, token));
+    }
+    private void pollRead(int active, String token) {
+        if (!current(active) || !reading || !token.equals(readToken)) return;
+        if (!isCourse(web.getUrl())) { fail("课表页面已变化，本次未保存，请重试"); return; }
+        if (android.os.SystemClock.elapsedRealtime() > readDeadline) { fail("读取课表超时，请稍后重试"); return; }
+        web.evaluateJavascript("JSON.stringify(window.__louTimetableResult || null)", value -> {
+            if (!current(active) || !reading || !token.equals(readToken)) return;
+            try {
+                JSONObject r = result(value);
+                if (token.equals(r.optString("token"))) {
+                    if ("error".equals(r.optString("status"))) { fail(r.optString("message", "课表读取失败")); return; }
+                    if ("ok".equals(r.optString("status"))) {
+                        Timetable t = new Timetable(r.getJSONObject("data").toString());
+                        if (t.firstMonday.isEmpty()) { fail("未取得学期起始日期，本次未保存"); return; }
+                        save(t, active); return;
                     }
                 }
-            } catch (Exception e) { fail("课表格式暂不受支持，原课表保持不变"); return; }
-            handler.postDelayed(() -> poll(active), 350);
+            } catch (Exception e) { fail("课表格式暂不受支持，原课表已保留"); return; }
+            handler.postDelayed(() -> pollRead(active, token), 350);
         });
     }
-    void stopReading() { reading = false; token = null; handler.removeCallbacksAndMessages(null); if (read != null) read.setEnabled(!saving); }
-    void fail(String text) { stopReading(); status.setText(text); }
-    void preview(Timetable candidate) {
-        LinearLayout body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL);
-        label(body, candidate.termName + " · " + candidate.lessons.size() + "条上课安排", 18);
-        label(body, "请核对课程、单双周、节次和日期。保存会替换本机原课表。", 13);
-        TextView date = label(body, "第1周周一：" + (candidate.firstMonday.isEmpty() ? "待选择" : candidate.firstMonday), 15);
-        button(body, "选择／校准开学日期", () -> {
-            Calendar c = Timetable.calendar(candidate.firstMonday); if (c == null) c = Calendar.getInstance();
-            DatePickerDialog picker = new DatePickerDialog(this, (v, y, m, d) -> {
-                String chosen = String.format(java.util.Locale.ROOT, "%04d-%02d-%02d", y, m + 1, d);
-                if (!chosen.equals(Timetable.monday(chosen))) { Toast.makeText(this, "请选择第1周的周一", Toast.LENGTH_LONG).show(); return; }
-                candidate.firstMonday = chosen; date.setText("第1周周一：" + chosen);
-            }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH));
-            picker.setTitle("选择第1周周一"); picker.show();
+    private void save(Timetable table, int active) {
+        saving = true; reading = false; handler.removeCallbacksAndMessages(null);
+        showProgress("课表已就位，正在保存", "保存完成后直接进入周课表");
+        io.execute(() -> {
+            try {
+                TimetableStore.save(getApplicationContext(), table);
+                runOnUiThread(() -> { saving = false; if (!current(active)) return; setResult(RESULT_OK);
+                    Toast.makeText(this, "已导入 " + table.lessons.size() + " 条上课安排", Toast.LENGTH_SHORT).show(); finish(); });
+            } catch (Exception e) { runOnUiThread(() -> { saving = false; fail("保存失败，原课表已保留，请重试"); }); }
         });
-        if (candidate.json.optJSONArray("units").length() == 0) label(body, "未读到作息时间，本次仅显示节次。", 13);
-        int count = 0;
-        for (Timetable.Lesson l : candidate.lessons) {
-            if (count++ == 100) { label(body, "其余课程保存后可切换周次查看", 13); break; }
-            label(body, l.name + "\n周" + "一二三四五六日".charAt(l.weekday - 1) + " · " + candidate.time(l)
-                    + "\n" + l.weekText() + " · " + (l.room.isEmpty() ? "地点待定" : l.room)
-                    + (l.teachers.isEmpty() ? "" : " · " + l.teachers), 14);
-        }
-        org.json.JSONArray other = candidate.json.optJSONArray("unarranged");
-        if (other != null && other.length() > 0) label(body, "另有 " + other.length() + "门未排课课程，保存后可查看名称，时间地点请以教务通知为准。", 13);
-        ScrollView scroll = new ScrollView(this); scroll.addView(body);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("确认导入课表").setView(scroll)
-                .setNegativeButton("取消", null).setPositiveButton("保存课表", null).create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            if (saving) return;
-            if (candidate.firstMonday.isEmpty()) { date.setText("请先选择第1周周一的日期"); return; }
-            saving = true; read.setEnabled(false);
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
-            dialog.setCancelable(false); dialog.setCanceledOnTouchOutside(false);
-            io.execute(() -> {
-                boolean ok;
-                try { TimetableStore.save(getApplicationContext(), candidate); ok = true; } catch (Exception e) { ok = false; }
-                final boolean saved = ok;
-                runOnUiThread(() -> {
-                    saving = false; if (isDestroyed()) return;
-                    dialog.dismiss(); read.setEnabled(true);
-                    if (saved) { Toast.makeText(this, "课表已保存", Toast.LENGTH_SHORT).show(); finish(); }
-                    else status.setText("保存失败，原课表保持不变，请重试");
-                });
-            });
-        }));
-        status.setText("读取成功，请核对后保存"); dialog.show();
     }
-    TextView label(LinearLayout p, String text, int size) {
-        TextView v = new TextView(this); v.setText(text); v.setTextSize(size); v.setTextColor(Ui.TEXT);
-        int d = Ui.dp(this, 10); v.setPadding(d, d, d, d); p.addView(v); return v;
+    private void fail(String message) {
+        if (saving || isDestroyed()) return;
+        generation++; busy = false; reading = false; submitted = false; pendingAccount = ""; pendingPassword = "";
+        handler.removeCallbacksAndMessages(null); web.stopLoading(); password.setText("");
+        web.setVisibility(View.INVISIBLE); waiting.setVisibility(View.GONE); form.setVisibility(View.VISIBLE); submit.setEnabled(true);
+        status.setText("重新试一次"); hint.setText(message == null || message.isEmpty() ? "学校认证未完成，请重试" : message);
     }
-    Button button(LinearLayout p, String text, Runnable action) {
-        Button b = new Button(this); b.setText(text); b.setTextSize(13); b.setTextColor(Ui.ACCENT); b.setAllCaps(false);
-        p.addView(b); b.setOnClickListener(v -> action.run()); return b;
-    }
-    @Override public void onBackPressed() {
-        if (saving) return;
-        if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed();
-    }
+    @Override public void onBackPressed() { if (!saving) super.onBackPressed(); }
     @Override public void onDestroy() {
-        stopReading();
-        if (web != null) { web.stopLoading(); web.removeAllViews(); web.destroy(); web = null; }
+        generation++; busy = false; pendingAccount = ""; pendingPassword = ""; handler.removeCallbacksAndMessages(null);
+        if (password != null) password.setText("");
+        if (web != null) { web.stopLoading(); content.removeView(web); web.destroy(); web = null; }
         io.shutdown(); super.onDestroy();
     }
 }

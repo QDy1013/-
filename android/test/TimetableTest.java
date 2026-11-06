@@ -3,11 +3,17 @@ package com.nopalou;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 /** Run with org.json on the JVM; the Android build supplies it from the platform. */
 public class TimetableTest {
     static int checks;
     static void ok(boolean b, String name) { if (!b) throw new AssertionError(name); checks++; System.out.println("PASS " + name); }
+    static JSONObject lesson(String name, int day, int start, int end, int... weeks) throws Exception {
+        JSONArray w = new JSONArray(); for (int week : weeks) w.put(week);
+        return new JSONObject().put("name", name).put("weekday", day).put("start", start).put("end", end)
+                .put("weeks", w).put("room", "测试教室").put("teachers", "测试教师");
+    }
     public static void main(String[] args) throws Exception {
         String fixture = Files.readString(Paths.get(args[0]));
         Timetable t = new Timetable(fixture);
@@ -32,6 +38,22 @@ public class TimetableTest {
         invalid = false;
         try { new Timetable(json.toString()); } catch (Exception e) { invalid = true; }
         ok(invalid, "invalid stored courses cannot be loaded");
+        JSONObject schedule = new JSONObject(fixture);
+        JSONArray meetings = new JSONArray().put(lesson("B", 1, 3, 4, 1)).put(lesson("A", 1, 1, 2, 1, 3))
+                .put(lesson("D", 2, 1, 2, 1)).put(lesson("Weekend", 6, 1, 4, 2));
+        schedule.put("lessons", meetings);
+        Timetable layoutTable = new Timetable(schedule.toString());
+        java.util.List<TimetableLayout.Block> blocks = TimetableLayout.blocks(layoutTable, 1);
+        ok(blocks.size() == 3, "adjacent periods and different days stay separate");
+        ok(blocks.get(0).start == 1 && blocks.get(1).start == 3, "meetings sorted by day and period");
+        ok(TimetableLayout.blocks(layoutTable, 2).size() == 1 && TimetableLayout.blocks(layoutTable, 2).get(0).weekday == 6, "weekend and week filtering");
+        ok(TimetableLayout.blocks(layoutTable, 3).size() == 1, "sparse week filtering");
+        ok(TimetableLayout.blocks(layoutTable, 4).isEmpty(), "empty weeks stay empty");
+        meetings.put(lesson("C", 1, 2, 3, 1));
+        blocks = TimetableLayout.blocks(new Timetable(schedule.toString()), 1);
+        ok(blocks.size() == 2, "transitive overlaps grouped instead of painted over");
+        ok(blocks.get(0).start == 1 && blocks.get(0).end == 4, "overlap group covers complete interval");
+        ok(blocks.get(0).lessons.size() == 3, "all overlapping courses retained for details");
         System.out.println(checks + " checks passed");
     }
 }
